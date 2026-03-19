@@ -1,5 +1,5 @@
 import axios from "axios";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import api from "../api/client";
 import AIPanel from "../components/AIPanel";
@@ -11,6 +11,7 @@ export default function EditorPage() {
   const [doc, setDoc] = useState<DocType | null>(null);
   const [text, setText] = useState("");
   const [saving, setSaving] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     loadDocument();
@@ -20,7 +21,6 @@ export default function EditorPage() {
     try {
       const resp = await api.get(`/api/documents/${documentId}`);
       setDoc(resp.data);
-      // Extract text from prosemirror-json content
       const content = resp.data.content;
       if (content?.content) {
         const parts = content.content
@@ -56,6 +56,24 @@ export default function EditorPage() {
     }
   };
 
+  const getSelection = (): { selectedText: string; start: number; end: number } | null => {
+    const el = textareaRef.current;
+    if (!el) return null;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    if (start === end) return null; // no selection
+    return { selectedText: text.slice(start, end), start, end };
+  };
+
+  const handleApply = (newText: string, selStart?: number, selEnd?: number) => {
+    if (selStart !== undefined && selEnd !== undefined) {
+      // Replace only the selected portion
+      setText(text.slice(0, selStart) + newText + text.slice(selEnd));
+    } else {
+      setText(newText);
+    }
+  };
+
   if (!doc) return <p>Loading...</p>;
 
   return (
@@ -71,6 +89,7 @@ export default function EditorPage() {
       </div>
 
       <textarea
+        ref={textareaRef}
         value={text}
         onChange={(e) => setText(e.target.value)}
         style={{
@@ -85,7 +104,12 @@ export default function EditorPage() {
         }}
       />
 
-      <AIPanel documentId={documentId!} text={text} onApply={setText} />
+      <AIPanel
+        documentId={documentId!}
+        text={text}
+        getSelection={getSelection}
+        onApply={handleApply}
+      />
     </div>
   );
 }

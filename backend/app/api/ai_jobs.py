@@ -65,13 +65,14 @@ async def create_ai_job(
     db.add(interaction)
     await db.flush()
 
-    source_text = _extract_text_from_content(doc.content, sel_from, sel_to)
+    # Prefer text sent directly from the editor over extracting from saved content
+    source_text = body.selected_text or _extract_text_from_content(doc.content, sel_from, sel_to)
     if not source_text.strip():
         interaction.status = "failed"
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="No text found in the selected range",
+            detail="No text found. Write some text or select text in the editor first.",
         )
 
     try:

@@ -3,20 +3,28 @@ import { useState } from "react";
 import api from "../api/client";
 import type { AISuggestion } from "../types";
 
+interface Selection {
+  selectedText: string;
+  start: number;
+  end: number;
+}
+
 interface Props {
   documentId: string;
   text: string;
-  onApply: (newText: string) => void;
+  getSelection: () => Selection | null;
+  onApply: (newText: string, selStart?: number, selEnd?: number) => void;
 }
 
 const ACTIONS = ["rewrite", "summarize", "translate", "restructure"] as const;
 
-export default function AIPanel({ documentId, text, onApply }: Props) {
+export default function AIPanel({ documentId, text, getSelection, onApply }: Props) {
   const [action, setAction] = useState<string>("rewrite");
   const [targetLang, setTargetLang] = useState("Chinese");
   const [loading, setLoading] = useState(false);
   const [suggestion, setSuggestion] = useState<AISuggestion | null>(null);
   const [error, setError] = useState("");
+  const [selRange, setSelRange] = useState<{ start: number; end: number } | null>(null);
 
   // Optional: user-provided AI config
   const [provider, setProvider] = useState("");
@@ -27,12 +35,29 @@ export default function AIPanel({ documentId, text, onApply }: Props) {
     setLoading(true);
     setError("");
     setSuggestion(null);
+
+    // Capture selection at the moment the button is clicked
+    const sel = getSelection();
+    const inputText = sel ? sel.selectedText : text;
+    setSelRange(sel ? { start: sel.start, end: sel.end } : null);
+
+    if (!inputText.trim()) {
+      setError("No text to process. Write something or select text first.");
+      setLoading(false);
+      return;
+    }
+
     try {
       const body: Record<string, unknown> = {
         action,
-        scope: "document",
+        scope: sel ? "selection" : "document",
         options: action === "translate" ? { target_language: targetLang } : {},
+        // Send the text directly so backend doesn't need to extract from saved content
+        selected_text: inputText,
       };
+      if (sel) {
+        body.selection_range = { from: sel.start, to: sel.end };
+      }
       if (provider) body.provider = provider;
       if (apiKey) body.api_key = apiKey;
       if (baseUrl) body.base_url = baseUrl;
@@ -40,7 +65,6 @@ export default function AIPanel({ documentId, text, onApply }: Props) {
       const jobResp = await api.post(`/api/documents/${documentId}/ai-jobs`, body);
       const jobId = jobResp.data.job_id;
 
-      // Fetch suggestion
       const sugResp = await api.get(`/api/ai-jobs/${jobId}/suggestion`);
       setSuggestion(sugResp.data);
     } catch (err: unknown) {
@@ -56,8 +80,9 @@ export default function AIPanel({ documentId, text, onApply }: Props) {
 
   const applySuggestion = () => {
     if (suggestion?.suggested_text) {
-      onApply(suggestion.suggested_text);
+      onApply(suggestion.suggested_text, selRange?.start, selRange?.end);
       setSuggestion(null);
+      setSelRange(null);
     }
   };
 
@@ -122,17 +147,21 @@ export default function AIPanel({ documentId, text, onApply }: Props) {
         {loading ? "Processing..." : `Run ${action}`}
       </button>
 
+      <p style={{ fontSize: 13, color: "#888", marginTop: 4 }}>
+        Tip: Select text in the editor above, then click Run. No selection = process entire document.
+      </p>
+
       {error && <p style={{ color: "red", marginTop: 8 }}>{error}</p>}
 
       {suggestion && (
         <div style={{ marginTop: 16, padding: 12, background: "#f9f9f9", borderRadius: 8 }}>
-          <h4>Suggestion</h4>
+          <h4>Suggestion {selRange ? "(selected text)" : "(full document)"}</h4>
           <pre style={{ whiteSpace: "pre-wrap", fontSize: 14 }}>{suggestion.suggested_text}</pre>
           <div style={{ marginTop: 8 }}>
             <button onClick={applySuggestion} style={{ marginRight: 8, padding: "6px 16px" }}>
               Accept
             </button>
-            <button onClick={() => setSuggestion(null)} style={{ padding: "6px 16px" }}>
+            <button onClick={() => { setSuggestion(null); setSelRange(null); }} style={{ padding: "6px 16px" }}>
               Reject
             </button>
           </div>

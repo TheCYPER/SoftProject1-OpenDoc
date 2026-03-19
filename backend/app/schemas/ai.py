@@ -8,6 +8,7 @@ class AIJobCreate(BaseModel):
     action: str  # rewrite, summarize, translate, restructure
     scope: str = "selection"
     selection_range: dict[str, int] | None = None  # {"from": 120, "to": 480}
+    selected_text: str | None = None  # text sent directly from the editor (preferred)
     base_revision_id: str | None = None
     options: dict[str, Any] | None = None
 
