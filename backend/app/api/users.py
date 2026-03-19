@@ -1,8 +1,10 @@
+import hashlib
+import hmac
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from jose import jwt
-from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +14,22 @@ from app.models.user import User
 from app.schemas.user import LoginRequest, TokenResponse, UserCreate, UserResponse
 
 router = APIRouter(tags=["auth"])
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations=260000)
+    return salt.hex() + ":" + dk.hex()
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        salt_hex, dk_hex = stored.split(":", 1)
+    except ValueError:
+        return False
+    salt = bytes.fromhex(salt_hex)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations=260000)
+    return hmac.compare_digest(dk.hex(), dk_hex)
 
 
 def _create_access_token(user_id: str) -> str:
@@ -36,7 +53,7 @@ async def register(body: UserCreate, db: AsyncSession = Depends(get_db)):
     user = User(
         email=body.email,
         display_name=body.display_name,
-        hashed_password=pwd_context.hash(body.password),
+        hashed_password=_hash_password(body.password),
     )
     db.add(user)
     await db.commit()
@@ -48,7 +65,7 @@ async def register(body: UserCreate, db: AsyncSession = Depends(get_db)):
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
-    if user is None or not pwd_context.verify(body.password, user.hashed_password):
+    if user is None or not _verify_password(body.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
