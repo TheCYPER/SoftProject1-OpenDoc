@@ -1,5 +1,6 @@
 import axios from "axios";
-import { FormEvent, useState } from "react";
+import { useState } from "react";
+import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/client";
 
