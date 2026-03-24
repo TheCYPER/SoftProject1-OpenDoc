@@ -1,5 +1,6 @@
 import axios from "axios";
 import { useState } from "react";
+import type { Editor } from "@tiptap/react";
 import api from "../api/client";
 import type { AISuggestion } from "../types";
 
@@ -11,14 +12,14 @@ interface Selection {
 
 interface Props {
   documentId: string;
-  text: string;
+  editor: Editor | null;
   getSelection: () => Selection | null;
   onApply: (newText: string, selStart?: number, selEnd?: number) => void;
 }
 
 const ACTIONS = ["rewrite", "summarize", "translate", "restructure"] as const;
 
-export default function AIPanel({ documentId, text, getSelection, onApply }: Props) {
+export default function AIPanel({ documentId, editor, getSelection, onApply }: Props) {
   const [action, setAction] = useState<string>("rewrite");
   const [targetLang, setTargetLang] = useState("Chinese");
   const [loading, setLoading] = useState(false);
@@ -30,6 +31,7 @@ export default function AIPanel({ documentId, text, getSelection, onApply }: Pro
   const [provider, setProvider] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const editorText = editor?.getText({ blockSeparator: "\n" }) ?? "";
 
   const runAI = async () => {
     setLoading(true);
@@ -38,7 +40,7 @@ export default function AIPanel({ documentId, text, getSelection, onApply }: Pro
 
     // Capture selection at the moment the button is clicked
     const sel = getSelection();
-    const inputText = sel ? sel.selectedText : text;
+    const inputText = sel ? sel.selectedText : (editor?.getText({ blockSeparator: "\n" }) ?? "");
     setSelRange(sel ? { start: sel.start, end: sel.end } : null);
 
     if (!inputText.trim()) {
@@ -143,7 +145,11 @@ export default function AIPanel({ documentId, text, getSelection, onApply }: Pro
         </div>
       </details>
 
-      <button onClick={runAI} disabled={loading || !text.trim()} style={{ padding: "8px 24px" }}>
+      <button
+        onClick={runAI}
+        disabled={loading || !editorText.trim()}
+        style={{ padding: "8px 24px" }}
+      >
         {loading ? "Processing..." : `Run ${action}`}
       </button>
 
@@ -161,7 +167,13 @@ export default function AIPanel({ documentId, text, getSelection, onApply }: Pro
             <button onClick={applySuggestion} style={{ marginRight: 8, padding: "6px 16px" }}>
               Accept
             </button>
-            <button onClick={() => { setSuggestion(null); setSelRange(null); }} style={{ padding: "6px 16px" }}>
+            <button
+              onClick={() => {
+                setSuggestion(null);
+                setSelRange(null);
+              }}
+              style={{ padding: "6px 16px" }}
+            >
               Reject
             </button>
           </div>
