@@ -1,11 +1,14 @@
 import axios from "axios";
 import { EditorContent, useEditor } from "@tiptap/react";
+import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON, ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey } from "y-prosemirror";
 import Placeholder from "@tiptap/extension-placeholder";
 import StarterKit from "@tiptap/starter-kit";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import * as Y from "yjs";
 import api from "../api/client";
 import AIPanel from "../components/AIPanel";
+import { CollaborationClient, type ConnectionState } from "../lib/collaboration";
 import type { Document as DocType, EditorSelectionRange, ProseMirrorDoc, ProseMirrorNode } from "../types";
 
 const EMPTY_DOC: ProseMirrorDoc = { type: "doc", content: [] };
@@ -47,11 +50,17 @@ export default function EditorPage() {
   const [loadedContent, setLoadedContent] = useState<ProseMirrorDoc>(EMPTY_DOC);
   const [saving, setSaving] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
+  const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
   const savedSnapshotRef = useRef(JSON.stringify(EMPTY_DOC));
+  const ydocRef = useRef<Y.Doc | null>(null);
+  const collaborationClientRef = useRef<CollaborationClient | null>(null);
+  const activeDocumentIdRef = useRef<string | null>(null);
 
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      StarterKit.configure({
+        history: false,
+      }),
       Placeholder.configure({
         placeholder: "Start writing here...",
       }),
@@ -74,10 +83,51 @@ export default function EditorPage() {
 
   useEffect(() => {
     if (!editor) return;
+    const token = localStorage.getItem("token");
+    if (!token || !documentId || doc?.document_id !== documentId) {
+      return;
+    }
+    if (activeDocumentIdRef.current === documentId && collaborationClientRef.current && ydocRef.current) {
+      return;
+    }
+
+    const seededDoc = prosemirrorJSONToYDoc(editor.schema, loadedContent);
+    const ydoc = new Y.Doc();
+    Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(seededDoc));
+    seededDoc.destroy();
+    const yXmlFragment = ydoc.getXmlFragment("prosemirror");
+
+    ydocRef.current?.destroy();
+    ydocRef.current = ydoc;
+
+    collaborationClientRef.current?.destroy();
+
+    editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey]);
+    editor.registerPlugin(ySyncPlugin(yXmlFragment));
+    editor.registerPlugin(yUndoPlugin());
+
     savedSnapshotRef.current = JSON.stringify(loadedContent);
-    editor.commands.setContent(loadedContent, false);
     setIsDirty(false);
-  }, [editor, loadedContent]);
+    activeDocumentIdRef.current = documentId;
+
+    const client = new CollaborationClient({
+      documentId,
+      token,
+      ydoc,
+      onStatusChange: setConnectionState,
+    });
+    collaborationClientRef.current = client;
+    client.connect();
+
+    return () => {
+      collaborationClientRef.current?.destroy();
+      collaborationClientRef.current = null;
+      editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey]);
+      ydocRef.current?.destroy();
+      ydocRef.current = null;
+      activeDocumentIdRef.current = null;
+    };
+  }, [editor, documentId, doc?.document_id]);
 
   const loadDocument = async () => {
     try {
@@ -93,10 +143,13 @@ export default function EditorPage() {
   const saveDocument = async () => {
     setSaving(true);
     try {
-      const nextContent = (editor?.getJSON() as ProseMirrorDoc | undefined) ?? loadedContent;
-      await api.patch(`/api/documents/${documentId}`, { content: nextContent });
+      const nextContent = (ydocRef.current
+        ? (yDocToProsemirrorJSON(ydocRef.current) as ProseMirrorDoc)
+        : ((editor?.getJSON() as ProseMirrorDoc | undefined) ?? loadedContent));
+      const response = await api.patch(`/api/documents/${documentId}`, { content: nextContent });
       savedSnapshotRef.current = JSON.stringify(nextContent);
       setLoadedContent(nextContent);
+      setDoc(response.data);
       setIsDirty(false);
     } catch (err) {
       if (axios.isAxiosError(err)) {
@@ -148,6 +201,9 @@ export default function EditorPage() {
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
         <h1 style={{ margin: 0 }}>{doc.title}</h1>
         <div>
+          <span style={{ marginRight: 12, fontSize: 14, color: connectionState === "connected" ? "#2e7d32" : "#b26a00" }}>
+            Live sync: {connectionState}
+          </span>
           <button onClick={saveDocument} disabled={saving || !isDirty} style={{ marginRight: 8 }}>
             {saving ? "Saving..." : isDirty ? "Save" : "Saved"}
           </button>

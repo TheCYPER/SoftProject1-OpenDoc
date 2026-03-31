@@ -1,10 +1,10 @@
 """WebSocket stub for real-time collaboration.
 
-Simple message relay between clients in the same document room.
-No CRDT — just broadcasts JSON messages to all connected peers.
+Binary message relay between clients in the same document room.
+Yjs handles CRDT merging on the clients; the backend only authenticates and relays updates.
 """
 
-from typing import Any
+import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
@@ -13,7 +13,7 @@ from app.config import settings
 
 router = APIRouter()
 
-# In-memory room management: document_id -> {user_id: WebSocket}
+# In-memory room management: document_id -> {connection_id: WebSocket}
 _rooms: dict[str, dict[str, WebSocket]] = {}
 
 
@@ -34,48 +34,41 @@ async def document_websocket(websocket: WebSocket, document_id: str, token: str 
         return
 
     await websocket.accept()
+    connection_id = str(uuid.uuid4())
 
     # Join room
     if document_id not in _rooms:
         _rooms[document_id] = {}
-    _rooms[document_id][user_id] = websocket
-
-    await _broadcast(document_id, user_id, {
-        "type": "presence.update",
-        "user_id": user_id,
-        "action": "joined",
-    })
+    _rooms[document_id][connection_id] = websocket
 
     try:
         while True:
-            data = await websocket.receive_json()
-            await _broadcast(document_id, user_id, {
-                **data,
-                "user_id": user_id,
-            })
+            message = await websocket.receive()
+            data = message.get("bytes")
+            if data is None:
+                if message.get("text") is not None:
+                    await websocket.close(code=1003, reason="Binary websocket frames only")
+                    return
+                continue
+            await _broadcast(document_id, connection_id, data)
     except WebSocketDisconnect:
         pass
     finally:
-        _rooms.get(document_id, {}).pop(user_id, None)
+        _rooms.get(document_id, {}).pop(connection_id, None)
         if document_id in _rooms and not _rooms[document_id]:
             del _rooms[document_id]
-        await _broadcast(document_id, user_id, {
-            "type": "presence.update",
-            "user_id": user_id,
-            "action": "left",
-        })
 
 
 async def _broadcast(
     document_id: str,
-    sender_id: str,
-    message: dict[str, Any],
+    sender_connection_id: str,
+    message: bytes,
 ) -> None:
     """Send a message to all peers in the room except the sender."""
     room = _rooms.get(document_id, {})
-    for uid, ws in list(room.items()):
-        if uid != sender_id:
+    for connection_id, ws in list(room.items()):
+        if connection_id != sender_connection_id:
             try:
-                await ws.send_json(message)
+                await ws.send_bytes(message)
             except Exception:
-                room.pop(uid, None)
+                room.pop(connection_id, None)

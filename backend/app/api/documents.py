@@ -88,8 +88,22 @@ async def update_document(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     update_data = body.model_dump(exclude_unset=True)
+    version_reason = None
+    if "content" in update_data:
+        new_revision = f"rev_{uuid.uuid4().hex[:8]}"
+        doc.current_revision_id = new_revision
+        version_reason = "update"
     for field, value in update_data.items():
         setattr(doc, field, value)
+
+    if version_reason is not None:
+        db.add(DocumentVersion(
+            document_id=doc.document_id,
+            snapshot=doc.content,
+            base_revision_id=doc.current_revision_id,
+            reason=version_reason,
+            created_by=current_user.user_id,
+        ))
 
     await db.commit()
     await db.refresh(doc)

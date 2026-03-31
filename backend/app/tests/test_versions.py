@@ -22,13 +22,23 @@ async def test_version_list_and_restore(
     versions = resp.json()
     assert len(versions) >= 1
     v1_id = versions[0]["version_id"]
+    initial_revision_id = versions[0]["base_revision_id"]
 
     # Update document content
-    await client.patch(f"/api/documents/{doc_id}", json={
+    update_resp = await client.patch(f"/api/documents/{doc_id}", json={
         "content": {"type": "doc", "content": [
             {"type": "paragraph", "content": [{"type": "text", "text": "v2 content"}]}
         ]},
     }, headers=auth_headers)
+    assert update_resp.status_code == 200
+    updated_doc = update_resp.json()
+    assert updated_doc["current_revision_id"] != initial_revision_id
+
+    resp = await client.get(f"/api/documents/{doc_id}/versions", headers=auth_headers)
+    assert resp.status_code == 200
+    updated_versions = resp.json()
+    assert len(updated_versions) >= 2
+    assert updated_versions[0]["base_revision_id"] == updated_doc["current_revision_id"]
 
     # Restore v1
     resp = await client.post(
