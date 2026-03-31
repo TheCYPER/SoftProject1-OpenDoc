@@ -1,15 +1,19 @@
-"""WebSocket stub for real-time collaboration.
+"""WebSocket handler for real-time collaboration.
 
 Binary message relay between clients in the same document room.
-Yjs handles CRDT merging on the clients; the backend only authenticates and relays updates.
+Yjs handles CRDT merging on the clients; the backend authenticates, checks
+document access, and relays updates.
 """
 
 import uuid
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_db
 from app.config import settings
+from app.services.permissions import check_document_access_by_user_id
 
 router = APIRouter()
 
@@ -27,16 +31,25 @@ def _verify_token(token: str) -> str | None:
 
 
 @router.websocket("/ws/documents/{document_id}")
-async def document_websocket(websocket: WebSocket, document_id: str, token: str = ""):
+async def document_websocket(
+    websocket: WebSocket,
+    document_id: str,
+    token: str = "",
+    db: AsyncSession = Depends(get_db),
+):
     user_id = _verify_token(token)
     if user_id is None:
         await websocket.close(code=4001, reason="Authentication required")
         return
 
+    has_access = await check_document_access_by_user_id(db, document_id, user_id)
+    if not has_access:
+        await websocket.close(code=4003, reason="Access denied")
+        return
+
     await websocket.accept()
     connection_id = str(uuid.uuid4())
 
-    # Join room
     if document_id not in _rooms:
         _rooms[document_id] = {}
     _rooms[document_id][connection_id] = websocket

@@ -3,12 +3,25 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
-from app.models.document import Document
 from app.models.document_share import DocumentShare
 from app.models.user import User
 from app.schemas.document import ShareCreate, ShareResponse
+from app.services.permissions import check_document_access
 
 router = APIRouter(tags=["shares"])
+
+
+@router.get("/api/documents/{document_id}/shares", response_model=list[ShareResponse])
+async def list_shares(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await check_document_access(db, document_id, current_user, required_role="owner")
+    result = await db.execute(
+        select(DocumentShare).where(DocumentShare.document_id == document_id)
+    )
+    return result.scalars().all()
 
 
 @router.post(
@@ -22,12 +35,7 @@ async def create_share(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    doc_result = await db.execute(
-        select(Document).where(Document.document_id == document_id)
-    )
-    if doc_result.scalar_one_or_none() is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-
+    await check_document_access(db, document_id, current_user, required_role="owner")
     share = DocumentShare(
         document_id=document_id,
         grantee_type=body.grantee_type,
@@ -53,6 +61,7 @@ async def delete_share(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    await check_document_access(db, document_id, current_user, required_role="owner")
     result = await db.execute(
         select(DocumentShare).where(
             DocumentShare.share_id == share_id,

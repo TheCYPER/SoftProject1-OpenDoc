@@ -93,3 +93,22 @@ async def workspace_id(db_session: AsyncSession):
     await db_session.commit()
     await db_session.refresh(ws)
     return ws.workspace_id
+
+
+@pytest_asyncio.fixture
+async def user_bob(client: AsyncClient):
+    """Register a second test user (Bob) and return headers + email."""
+    unique = uuid.uuid4().hex[:8]
+    email = f"bob_{unique}@example.com"
+    resp = await client.post("/api/auth/register", json={
+        "email": email,
+        "display_name": "Bob",
+        "password": "testpass123",
+    })
+    assert resp.status_code == 201, f"Bob register failed: {resp.text}"
+    resp = await client.post("/api/auth/login", json={
+        "email": email,
+        "password": "testpass123",
+    })
+    assert resp.status_code == 200, f"Bob login failed: {resp.text}"
+    return {"headers": {"Authorization": f"Bearer {resp.json()['access_token']}"}, "email": email}

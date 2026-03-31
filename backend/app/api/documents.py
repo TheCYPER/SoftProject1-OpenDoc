@@ -1,11 +1,13 @@
 import uuid
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, status
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
 from app.models.document import Document
+from app.models.document_share import DocumentShare
 from app.models.document_version import DocumentVersion
 from app.models.user import User
 from app.schemas.document import (
@@ -14,6 +16,7 @@ from app.schemas.document import (
     DocumentResponse,
     DocumentUpdate,
 )
+from app.services.permissions import check_document_access
 
 router = APIRouter(tags=["documents"])
 
@@ -54,10 +57,32 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = select(Document).where(Document.status != "deleted")
+    now = datetime.now(timezone.utc)
+    accessible_via_share = (
+        select(DocumentShare.document_id)
+        .where(
+            DocumentShare.grantee_type == "USER",
+            DocumentShare.grantee_ref == current_user.email,
+            or_(
+                DocumentShare.expires_at.is_(None),
+                DocumentShare.expires_at > now,
+            ),
+        )
+        .scalar_subquery()
+    )
+    query = (
+        select(Document)
+        .where(
+            Document.status != "deleted",
+            or_(
+                Document.created_by == current_user.user_id,
+                Document.document_id.in_(accessible_via_share),
+            ),
+        )
+        .order_by(Document.updated_at.desc())
+    )
     if workspace_id:
         query = query.where(Document.workspace_id == workspace_id)
-    query = query.order_by(Document.updated_at.desc())
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -68,11 +93,7 @@ async def get_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Document).where(Document.document_id == document_id))
-    doc = result.scalar_one_or_none()
-    if doc is None or doc.status == "deleted":
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    return doc
+    return await check_document_access(db, document_id, current_user, required_role="viewer")
 
 
 @router.patch("/api/documents/{document_id}", response_model=DocumentResponse)
@@ -82,10 +103,7 @@ async def update_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Document).where(Document.document_id == document_id))
-    doc = result.scalar_one_or_none()
-    if doc is None or doc.status == "deleted":
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    doc = await check_document_access(db, document_id, current_user, required_role="editor")
 
     update_data = body.model_dump(exclude_unset=True)
     version_reason = None
@@ -116,10 +134,6 @@ async def delete_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Document).where(Document.document_id == document_id))
-    doc = result.scalar_one_or_none()
-    if doc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-
+    doc = await check_document_access(db, document_id, current_user, required_role="owner")
     doc.status = "deleted"
     await db.commit()

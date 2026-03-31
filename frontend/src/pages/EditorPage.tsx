@@ -8,6 +8,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import * as Y from "yjs";
 import api from "../api/client";
 import AIPanel from "../components/AIPanel";
+import ShareModal from "../components/ShareModal";
 import { CollaborationClient, type ConnectionState } from "../lib/collaboration";
 import type { Document as DocType, EditorSelectionRange, ProseMirrorDoc, ProseMirrorNode } from "../types";
 
@@ -51,6 +52,7 @@ export default function EditorPage() {
   const [saving, setSaving] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
+  const [shareOpen, setShareOpen] = useState(false);
   const savedSnapshotRef = useRef(JSON.stringify(EMPTY_DOC));
   const ydocRef = useRef<Y.Doc | null>(null);
   const collaborationClientRef = useRef<CollaborationClient | null>(null);
@@ -204,6 +206,9 @@ export default function EditorPage() {
           <span style={{ marginRight: 12, fontSize: 14, color: connectionState === "connected" ? "#2e7d32" : "#b26a00" }}>
             Live sync: {connectionState}
           </span>
+          <button onClick={() => setShareOpen(true)} style={{ marginRight: 8 }}>
+            Share
+          </button>
           <button onClick={saveDocument} disabled={saving || !isDirty} style={{ marginRight: 8 }}>
             {saving ? "Saving..." : isDirty ? "Save" : "Saved"}
           </button>
@@ -246,6 +251,12 @@ export default function EditorPage() {
         </div>
         <EditorContent editor={editor} />
       </div>
+
+      <ShareModal
+        documentId={documentId!}
+        isOpen={shareOpen}
+        onClose={() => setShareOpen(false)}
+      />
 
       <AIPanel
         documentId={documentId!}
