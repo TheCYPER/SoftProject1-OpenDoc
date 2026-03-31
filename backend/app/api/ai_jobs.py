@@ -48,8 +48,8 @@ async def create_ai_job(
     if doc is None or doc.status == "deleted":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    sel_from = body.selection_range.get("from") if body.selection_range else None
-    sel_to = body.selection_range.get("to") if body.selection_range else None
+    sel_from = body.selection_range.from_ if body.selection_range else None
+    sel_to = body.selection_range.to if body.selection_range else None
 
     interaction = AIInteraction(
         document_id=document_id,

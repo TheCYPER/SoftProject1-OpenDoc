@@ -5,6 +5,29 @@ export interface User {
   created_at: string;
 }
 
+export interface ProseMirrorMark {
+  type: string;
+  attrs?: Record<string, unknown>;
+}
+
+export interface ProseMirrorNode {
+  type: string;
+  attrs?: Record<string, unknown>;
+  text?: string;
+  marks?: ProseMirrorMark[];
+  content?: ProseMirrorNode[];
+}
+
+export interface ProseMirrorDoc {
+  type: "doc";
+  content: ProseMirrorNode[];
+}
+
+export interface EditorSelectionRange {
+  from: number;
+  to: number;
+}
+
 export interface TokenResponse {
   access_token: string;
   token_type: string;
@@ -15,7 +38,7 @@ export interface Document {
   workspace_id: string;
   created_by: string;
   title: string;
-  content: Record<string, unknown> | null;
+  content: ProseMirrorDoc | null;
   content_format: string;
   current_revision_id: string | null;
   status: string;

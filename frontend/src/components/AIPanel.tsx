@@ -2,19 +2,18 @@ import axios from "axios";
 import { useState } from "react";
 import type { Editor } from "@tiptap/react";
 import api from "../api/client";
-import type { AISuggestion } from "../types";
+import type { AISuggestion, EditorSelectionRange } from "../types";
 
 interface Selection {
   selectedText: string;
-  start: number;
-  end: number;
+  range: EditorSelectionRange;
 }
 
 interface Props {
   documentId: string;
   editor: Editor | null;
   getSelection: () => Selection | null;
-  onApply: (newText: string, selStart?: number, selEnd?: number) => void;
+  onApply: (newText: string, selection?: EditorSelectionRange) => { ok: boolean; error?: string };
 }
 
 const ACTIONS = ["rewrite", "summarize", "translate", "restructure"] as const;
@@ -25,7 +24,7 @@ export default function AIPanel({ documentId, editor, getSelection, onApply }: P
   const [loading, setLoading] = useState(false);
   const [suggestion, setSuggestion] = useState<AISuggestion | null>(null);
   const [error, setError] = useState("");
-  const [selRange, setSelRange] = useState<{ start: number; end: number } | null>(null);
+  const [selRange, setSelRange] = useState<EditorSelectionRange | null>(null);
 
   // Optional: user-provided AI config
   const [provider, setProvider] = useState("");
@@ -41,7 +40,7 @@ export default function AIPanel({ documentId, editor, getSelection, onApply }: P
     // Capture selection at the moment the button is clicked
     const sel = getSelection();
     const inputText = sel ? sel.selectedText : (editor?.getText({ blockSeparator: "\n" }) ?? "");
-    setSelRange(sel ? { start: sel.start, end: sel.end } : null);
+    setSelRange(sel?.range ?? null);
 
     if (!inputText.trim()) {
       setError("No text to process. Write something or select text first.");
@@ -58,7 +57,7 @@ export default function AIPanel({ documentId, editor, getSelection, onApply }: P
         selected_text: inputText,
       };
       if (sel) {
-        body.selection_range = { from: sel.start, to: sel.end };
+        body.selection_range = sel.range;
       }
       if (provider) body.provider = provider;
       if (apiKey) body.api_key = apiKey;
@@ -82,9 +81,14 @@ export default function AIPanel({ documentId, editor, getSelection, onApply }: P
 
   const applySuggestion = () => {
     if (suggestion?.suggested_text) {
-      onApply(suggestion.suggested_text, selRange?.start, selRange?.end);
+      const result = onApply(suggestion.suggested_text, selRange ?? undefined);
+      if (!result.ok) {
+        setError(result.error || "Unable to apply suggestion");
+        return;
+      }
       setSuggestion(null);
       setSelRange(null);
+      setError("");
     }
   };
 
