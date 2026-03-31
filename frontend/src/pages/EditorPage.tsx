@@ -2,22 +2,11 @@ import axios from "axios";
 import { EditorContent, useEditor } from "@tiptap/react";
 import Placeholder from "@tiptap/extension-placeholder";
 import StarterKit from "@tiptap/starter-kit";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import api from "../api/client";
 import AIPanel from "../components/AIPanel";
-import type { Document as DocType } from "../types";
-
-interface ProseMirrorNode {
-  type: string;
-  text?: string;
-  content?: ProseMirrorNode[];
-}
-
-interface ProseMirrorDoc {
-  type: "doc";
-  content: ProseMirrorNode[];
-}
+import type { Document as DocType, EditorSelectionRange, ProseMirrorDoc, ProseMirrorNode } from "../types";
 
 const EMPTY_DOC: ProseMirrorDoc = { type: "doc", content: [] };
 
@@ -29,6 +18,16 @@ function isProseMirrorDoc(value: unknown): value is ProseMirrorDoc {
       "content" in value &&
       (value as { type?: string }).type === "doc"
   );
+}
+
+function nodeHasRichFormatting(node: ProseMirrorNode): boolean {
+  if (node.type !== "paragraph" && node.type !== "text" && node.type !== "doc") {
+    return true;
+  }
+  if (node.marks && node.marks.length > 0) {
+    return true;
+  }
+  return node.content?.some(nodeHasRichFormatting) ?? false;
 }
 
 function plainTextToDoc(text: string): ProseMirrorDoc {
@@ -47,6 +46,8 @@ export default function EditorPage() {
   const [doc, setDoc] = useState<DocType | null>(null);
   const [loadedContent, setLoadedContent] = useState<ProseMirrorDoc>(EMPTY_DOC);
   const [saving, setSaving] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const savedSnapshotRef = useRef(JSON.stringify(EMPTY_DOC));
 
   const editor = useEditor({
     extensions: [
@@ -62,6 +63,9 @@ export default function EditorPage() {
         class: "rich-editor__content",
       },
     },
+    onUpdate: ({ editor: nextEditor }) => {
+      setIsDirty(JSON.stringify(nextEditor.getJSON()) !== savedSnapshotRef.current);
+    },
   });
 
   useEffect(() => {
@@ -70,7 +74,9 @@ export default function EditorPage() {
 
   useEffect(() => {
     if (!editor) return;
+    savedSnapshotRef.current = JSON.stringify(loadedContent);
     editor.commands.setContent(loadedContent, false);
+    setIsDirty(false);
   }, [editor, loadedContent]);
 
   const loadDocument = async () => {
@@ -87,9 +93,11 @@ export default function EditorPage() {
   const saveDocument = async () => {
     setSaving(true);
     try {
-      await api.patch(`/api/documents/${documentId}`, {
-        content: (editor?.getJSON() as ProseMirrorDoc | undefined) ?? loadedContent,
-      });
+      const nextContent = (editor?.getJSON() as ProseMirrorDoc | undefined) ?? loadedContent;
+      await api.patch(`/api/documents/${documentId}`, { content: nextContent });
+      savedSnapshotRef.current = JSON.stringify(nextContent);
+      setLoadedContent(nextContent);
+      setIsDirty(false);
     } catch (err) {
       if (axios.isAxiosError(err)) {
         alert("Save failed: " + (err.response?.data?.detail || err.message));
@@ -99,22 +107,38 @@ export default function EditorPage() {
     }
   };
 
-  const getSelection = (): { selectedText: string; start: number; end: number } | null => {
+  const getSelection = (): { selectedText: string; range: EditorSelectionRange } | null => {
     if (!editor) return null;
     const { from, to, empty } = editor.state.selection;
     if (empty) return null;
     const selectedText = editor.state.doc.textBetween(from, to, "\n");
-    return { selectedText, start: from, end: to };
+    return { selectedText, range: { from, to } };
   };
 
-  const handleApply = (newText: string, selStart?: number, selEnd?: number) => {
-    if (!editor) return;
-
-    if (selStart !== undefined && selEnd !== undefined) {
-      editor.chain().focus().insertContentAt({ from: selStart, to: selEnd }, newText).run();
-    } else {
-      editor.commands.setContent(plainTextToDoc(newText));
+  const handleApply = (
+    newText: string,
+    selection?: EditorSelectionRange
+  ): { ok: boolean; error?: string } => {
+    if (!editor) {
+      return { ok: false, error: "Editor is not ready yet." };
     }
+
+    if (selection) {
+      editor.chain().focus().insertContentAt(selection, newText).run();
+      return { ok: true };
+    }
+
+    const currentDoc = (editor.getJSON() as ProseMirrorDoc | undefined) ?? loadedContent;
+    if (nodeHasRichFormatting(currentDoc)) {
+      return {
+        ok: false,
+        error:
+          "Full-document AI apply is disabled for formatted content right now. Apply to a selection to preserve formatting.",
+      };
+    }
+
+    editor.commands.setContent(plainTextToDoc(newText));
+    return { ok: true };
   };
 
   if (!doc) return <p>Loading...</p>;
@@ -124,8 +148,8 @@ export default function EditorPage() {
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
         <h1 style={{ margin: 0 }}>{doc.title}</h1>
         <div>
-          <button onClick={saveDocument} disabled={saving} style={{ marginRight: 8 }}>
-            {saving ? "Saving..." : "Save"}
+          <button onClick={saveDocument} disabled={saving || !isDirty} style={{ marginRight: 8 }}>
+            {saving ? "Saving..." : isDirty ? "Save" : "Saved"}
           </button>
           <button onClick={() => navigate("/documents")}>Back</button>
         </div>
