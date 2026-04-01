@@ -147,6 +147,18 @@ async def test_shared_viewer_can_read_document(
     resp = await client.get(f"/api/documents/{doc_id}", headers=user_bob["headers"])
     assert resp.status_code == 200
     assert resp.json()["document_id"] == doc_id
+    assert resp.json()["role"] == "viewer"
+
+
+@pytest.mark.asyncio
+async def test_owner_get_document_returns_owner_role(
+    client: AsyncClient, auth_headers: dict, workspace_id: str
+):
+    doc_id = await _create_doc(client, auth_headers, workspace_id)
+
+    resp = await client.get(f"/api/documents/{doc_id}", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "owner"
 
 
 @pytest.mark.asyncio

@@ -17,16 +17,6 @@ import type { Document as DocType, EditorSelectionRange, ProseMirrorDoc, ProseMi
 
 const EMPTY_DOC: ProseMirrorDoc = { type: "doc", content: [] };
 
-function isProseMirrorDoc(value: unknown): value is ProseMirrorDoc {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      "type" in value &&
-      "content" in value &&
-      (value as { type?: string }).type === "doc"
-  );
-}
-
 function nodeHasRichFormatting(node: ProseMirrorNode): boolean {
   if (node.type !== "paragraph" && node.type !== "text" && node.type !== "doc") {
     return true;
@@ -86,6 +76,7 @@ export default function EditorPage() {
   const ydocRef = useRef<Y.Doc | null>(null);
   const collaborationClientRef = useRef<CollaborationClient | null>(null);
   const activeDocumentIdRef = useRef<string | null>(null);
+  const canEdit = doc?.role == null ? true : doc.role !== "viewer";
 
   const editor = useEditor({
     extensions: [
@@ -165,6 +156,11 @@ export default function EditorPage() {
     };
   }, [editor, documentId, doc?.document_id, currentUser?.display_name]);
 
+  useEffect(() => {
+    if (!editor) return;
+    editor.setEditable(canEdit);
+  }, [editor, canEdit]);
+
   const loadDocument = async () => {
     try {
       const resp = await api.get(`/api/documents/${documentId}`);
@@ -189,6 +185,7 @@ export default function EditorPage() {
   };
 
   const saveDocument = async () => {
+    if (!canEdit) return;
     setSaving(true);
     try {
       const nextContent = (ydocRef.current
@@ -254,13 +251,16 @@ export default function EditorPage() {
     if (!editor) {
       return { ok: false, error: "Editor is not ready yet." };
     }
+    if (!canEdit) {
+      return { ok: false, error: "You only have viewer access for this document." };
+    }
 
     if (selection) {
       editor.chain().focus().insertContentAt(selection, newText).run();
       return { ok: true };
     }
 
-    const currentDoc = (editor.getJSON() as ProseMirrorDoc | undefined) ?? loadedContent;
+    const currentDoc = (editor.getJSON() as ProseMirrorDoc | undefined) ?? EMPTY_DOC;
     if (nodeHasRichFormatting(currentDoc)) {
       return {
         ok: false,
@@ -321,7 +321,8 @@ export default function EditorPage() {
                 title={connectionState}
               />
               <span className="text-xs text-muted">{connectionState}</span>
-              {isDirty && <span className="badge badge-warning">Unsaved</span>}
+              {!canEdit && <span className="badge badge-info">Read only</span>}
+              {canEdit && isDirty && <span className="badge badge-warning">Unsaved</span>}
             </div>
           </div>
         </div>
@@ -383,7 +384,7 @@ export default function EditorPage() {
             <button
               className={`btn btn-sm ${isDirty ? "btn-primary" : ""}`}
               onClick={saveDocument}
-              disabled={saving || !isDirty}
+              disabled={!canEdit || saving || !isDirty}
             >
               {saving && <span className="spinner" />}
               {saving ? "Saving..." : isDirty ? "Save" : "Saved"}
@@ -400,7 +401,7 @@ export default function EditorPage() {
               <button
                 type="button"
                 onClick={() => editor?.chain().focus().toggleBold().run()}
-                disabled={!editor?.can().chain().focus().toggleBold().run()}
+                disabled={!canEdit || !editor?.can().chain().focus().toggleBold().run()}
                 className={editor?.isActive("bold") ? "is-active" : ""}
                 title="Bold (Ctrl+B)"
               >
@@ -409,7 +410,7 @@ export default function EditorPage() {
               <button
                 type="button"
                 onClick={() => editor?.chain().focus().toggleItalic().run()}
-                disabled={!editor?.can().chain().focus().toggleItalic().run()}
+                disabled={!canEdit || !editor?.can().chain().focus().toggleItalic().run()}
                 className={editor?.isActive("italic") ? "is-active" : ""}
                 title="Italic (Ctrl+I)"
               >
@@ -418,6 +419,7 @@ export default function EditorPage() {
               <button
                 type="button"
                 onClick={() => editor?.chain().focus().toggleBulletList().run()}
+                disabled={!canEdit}
                 className={editor?.isActive("bulletList") ? "is-active" : ""}
                 title="Bullet List"
               >
@@ -426,6 +428,7 @@ export default function EditorPage() {
               <button
                 type="button"
                 onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+                disabled={!canEdit}
                 className={editor?.isActive("orderedList") ? "is-active" : ""}
                 title="Numbered List"
               >
