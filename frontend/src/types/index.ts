@@ -44,6 +44,7 @@ export interface Document {
   status: string;
   created_at: string;
   updated_at: string;
+  role?: string | null;
 }
 
 export interface DocumentListItem {

@@ -38,6 +38,7 @@ async def check_document_access(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     if doc.created_by == user.user_id:
+        setattr(doc, "role", "owner")
         return doc
 
     if required_role == "owner":
@@ -71,6 +72,7 @@ async def check_document_access(
             detail="Insufficient permissions",
         )
 
+    setattr(doc, "role", share.role)
     return doc
 
 
@@ -78,6 +80,7 @@ async def check_document_access_by_user_id(
     db: AsyncSession,
     document_id: str,
     user_id: str,
+    required_role: str = "viewer",
 ) -> bool:
     """Boolean check used by the WebSocket handler (no User object available)."""
     user_result = await db.execute(select(User).where(User.user_id == user_id))
@@ -85,7 +88,7 @@ async def check_document_access_by_user_id(
     if user is None:
         return False
     try:
-        await check_document_access(db, document_id, user, required_role="viewer")
+        await check_document_access(db, document_id, user, required_role=required_role)
         return True
     except HTTPException:
         return False

@@ -182,10 +182,11 @@ async def document_websocket(
         await websocket.close(code=4001, reason="Authentication required")
         return
 
-    has_access = await check_document_access_by_user_id(db, document_id, user_id)
+    has_access = await check_document_access_by_user_id(db, document_id, user_id, required_role="viewer")
     if not has_access:
         await websocket.close(code=4003, reason="Access denied")
         return
+    can_edit = await check_document_access_by_user_id(db, document_id, user_id, required_role="editor")
 
     await websocket.accept()
     connection_id = str(uuid.uuid4())
@@ -237,6 +238,13 @@ async def document_websocket(
 
                 elif sync_type == SYNC_STEP2 or sync_type == SYNC_UPDATE:
                     # Client sent an update. Apply to server doc + broadcast.
+                    if not can_edit:
+                        logger.debug(
+                            "Ignoring Yjs update from read-only user %s for document %s",
+                            user_id,
+                            document_id,
+                        )
+                        continue
                     try:
                         update_data, _ = _read_varuint8array(raw, 2)
                         if update_data:

@@ -27,6 +27,7 @@ class DocumentResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+    role: str | None = None
 
     model_config = {"from_attributes": True}
 
