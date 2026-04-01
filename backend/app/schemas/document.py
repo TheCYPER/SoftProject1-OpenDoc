@@ -61,6 +61,12 @@ class ShareCreate(BaseModel):
     expires_at: datetime | None = None
 
 
+class ShareUpdate(BaseModel):
+    role: str | None = None
+    allow_ai: bool | None = None
+    expires_at: datetime | None = None
+
+
 class ShareResponse(BaseModel):
     share_id: str
     document_id: str
@@ -69,6 +75,19 @@ class ShareResponse(BaseModel):
     role: str
     allow_ai: bool
     expires_at: datetime | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class AuditEventResponse(BaseModel):
+    audit_event_id: str
+    workspace_id: str
+    document_id: str | None
+    actor_user_id: str
+    event_type: str
+    target_ref: str | None
+    metadata_json: dict[str, Any] | None
     created_at: datetime
 
     model_config = {"from_attributes": True}

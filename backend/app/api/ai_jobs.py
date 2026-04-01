@@ -1,18 +1,25 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
 from app.models.ai_interaction import AIInteraction
 from app.models.ai_suggestion import AISuggestion
+from app.models.audit_event import AuditEvent
 from app.models.document import Document
 from app.models.user import User
 from app.schemas.ai import AIJobApply, AIJobCreate, AIJobResponse, AISuggestionResponse
 from app.services.ai.ai_service import run_ai_job
 
 router = APIRouter(tags=["ai"])
+limiter = Limiter(key_func=get_remote_address)
+
+# Per-user AI job quota (PoC: 50 jobs per user)
+AI_JOB_QUOTA = 50
 
 
 def _extract_text_from_content(content: dict | None, sel_from: int | None, sel_to: int | None) -> str:
@@ -30,12 +37,25 @@ def _extract_text_from_content(content: dict | None, sel_from: int | None, sel_t
     return full_text
 
 
+async def _check_quota(db: AsyncSession, user_id: str) -> bool:
+    """Return True if user is within their AI job quota."""
+    result = await db.execute(
+        select(func.count()).select_from(AIInteraction).where(
+            AIInteraction.requested_by == user_id
+        )
+    )
+    count = result.scalar_one()
+    return count < AI_JOB_QUOTA
+
+
 @router.post(
     "/api/documents/{document_id}/ai-jobs",
     response_model=AIJobResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@limiter.limit("20/minute")
 async def create_ai_job(
+    request: Request,
     document_id: str,
     body: AIJobCreate,
     db: AsyncSession = Depends(get_db),
@@ -47,6 +67,27 @@ async def create_ai_job(
     doc = doc_result.scalar_one_or_none()
     if doc is None or doc.status == "deleted":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # Quota check
+    if not await _check_quota(db, current_user.user_id):
+        interaction = AIInteraction(
+            document_id=document_id,
+            requested_by=current_user.user_id,
+            action_type=body.action,
+            scope_type=body.scope,
+            base_revision_id=body.base_revision_id or doc.current_revision_id,
+            model_profile=body.provider or "default",
+            status="quota_exceeded",
+            completed_at=datetime.now(timezone.utc),
+        )
+        db.add(interaction)
+        await db.commit()
+        await db.refresh(interaction)
+        return AIJobResponse(
+            job_id=interaction.interaction_id,
+            status="quota_exceeded",
+            created_at=interaction.created_at,
+        )
 
     sel_from = body.selection_range.from_ if body.selection_range else None
     sel_to = body.selection_range.to if body.selection_range else None
@@ -75,6 +116,13 @@ async def create_ai_job(
             detail="No text found. Write some text or select text in the editor first.",
         )
 
+    # Stale detection: if caller provided a base_revision_id that differs from current
+    is_stale = (
+        body.base_revision_id is not None
+        and doc.current_revision_id is not None
+        and body.base_revision_id != doc.current_revision_id
+    )
+
     try:
         suggested_text = await run_ai_job(
             action=body.action,
@@ -97,9 +145,10 @@ async def create_ai_job(
         original_text=source_text,
         suggested_text=suggested_text,
         disposition="pending",
+        stale=is_stale,
     )
     db.add(suggestion)
-    interaction.status = "ready"
+    interaction.status = "stale" if is_stale else "ready"
     interaction.completed_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(interaction)
@@ -163,12 +212,35 @@ async def apply_suggestion(
     if suggestion is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion not found")
 
+    interaction_result = await db.execute(
+        select(AIInteraction).where(AIInteraction.interaction_id == job_id)
+    )
+    interaction = interaction_result.scalar_one()
+
+    doc_result = await db.execute(
+        select(Document).where(Document.document_id == interaction.document_id)
+    )
+    doc = doc_result.scalar_one()
+
     suggestion.disposition = "accepted" if body.mode == "full" else "partially_applied"
     suggestion.applied_by = current_user.user_id
     suggestion.applied_at = datetime.now(timezone.utc)
     if body.selected_diff_blocks:
         suggestion.accepted_segments_json = {"blocks": body.selected_diff_blocks}
 
+    audit = AuditEvent(
+        workspace_id=doc.workspace_id,
+        document_id=doc.document_id,
+        actor_user_id=current_user.user_id,
+        event_type="ai.suggestion.applied",
+        target_ref=str(suggestion.suggestion_id),
+        metadata_json={
+            "job_id": job_id,
+            "mode": body.mode,
+            "action_type": interaction.action_type,
+        },
+    )
+    db.add(audit)
     await db.commit()
     return {"status": "applied", "suggestion_id": str(suggestion.suggestion_id)}
 
@@ -188,6 +260,26 @@ async def reject_suggestion(
     if suggestion is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion not found")
 
+    interaction_result = await db.execute(
+        select(AIInteraction).where(AIInteraction.interaction_id == job_id)
+    )
+    interaction = interaction_result.scalar_one()
+
+    doc_result = await db.execute(
+        select(Document).where(Document.document_id == interaction.document_id)
+    )
+    doc = doc_result.scalar_one()
+
     suggestion.disposition = "rejected"
+
+    audit = AuditEvent(
+        workspace_id=doc.workspace_id,
+        document_id=doc.document_id,
+        actor_user_id=current_user.user_id,
+        event_type="ai.suggestion.rejected",
+        target_ref=str(suggestion.suggestion_id),
+        metadata_json={"job_id": job_id, "action_type": interaction.action_type},
+    )
+    db.add(audit)
     await db.commit()
     return {"status": "rejected"}

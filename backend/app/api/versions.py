@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
+from app.models.audit_event import AuditEvent
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
 from app.models.user import User
@@ -71,6 +72,16 @@ async def restore_version(
 
     doc.content = old_version.snapshot
     doc.current_revision_id = new_revision
+
+    audit = AuditEvent(
+        workspace_id=doc.workspace_id,
+        document_id=document_id,
+        actor_user_id=current_user.user_id,
+        event_type="version.restored",
+        target_ref=version_id,
+        metadata_json={"new_version_id": new_version.version_id, "new_revision": new_revision},
+    )
+    db.add(audit)
     await db.commit()
     await db.refresh(new_version)
     return new_version

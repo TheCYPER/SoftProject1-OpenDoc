@@ -1,9 +1,11 @@
 import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
+import * as awarenessProtocol from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
 import * as Y from "yjs";
 
 const MESSAGE_SYNC = 0;
+const MESSAGE_AWARENESS = 1;
 
 export type ConnectionState = "connecting" | "connected" | "disconnected";
 
@@ -11,6 +13,7 @@ interface CollaborationClientOptions {
   documentId: string;
   token: string;
   ydoc: Y.Doc;
+  displayName?: string;
   onStatusChange: (status: ConnectionState) => void;
 }
 
@@ -34,12 +37,21 @@ export class CollaborationClient {
   private reconnectTimer: number | null = null;
   private destroyed = false;
 
+  readonly awareness: awarenessProtocol.Awareness;
+
   constructor(options: CollaborationClientOptions) {
     this.documentId = options.documentId;
     this.token = options.token;
     this.ydoc = options.ydoc;
     this.onStatusChange = options.onStatusChange;
     this.handleDocumentUpdate = this.handleDocumentUpdate.bind(this);
+    this.handleAwarenessUpdate = this.handleAwarenessUpdate.bind(this);
+
+    this.awareness = new awarenessProtocol.Awareness(options.ydoc);
+    // Set local user info
+    const displayName = options.displayName ?? "User";
+    const color = `hsl(${(Math.abs(hashCode(displayName)) % 360)}, 70%, 50%)`;
+    this.awareness.setLocalState({ user: { name: displayName, color } });
   }
 
   connect() {
@@ -55,7 +67,9 @@ export class CollaborationClient {
       this.reconnectAttempts = 0;
       this.onStatusChange("connected");
       this.ydoc.on("update", this.handleDocumentUpdate);
+      this.awareness.on("update", this.handleAwarenessUpdate);
       this.sendSyncStep1();
+      this.broadcastAwareness();
     };
 
     websocket.onmessage = (event) => {
@@ -64,18 +78,24 @@ export class CollaborationClient {
         return;
       }
 
-      const decoder = decoding.createDecoder(new Uint8Array(message));
+      const data = new Uint8Array(message);
+      const decoder = decoding.createDecoder(data);
       const messageType = decoding.readVarUint(decoder);
-      if (messageType !== MESSAGE_SYNC) {
-        return;
-      }
 
-      const encoder = encoding.createEncoder();
-      encoding.writeVarUint(encoder, MESSAGE_SYNC);
-      syncProtocol.readSyncMessage(decoder, encoder, this.ydoc, this.originToken);
-      const reply = encoding.toUint8Array(encoder);
-      if (reply.length > 1) {
-        this.websocket?.send(reply);
+      if (messageType === MESSAGE_SYNC) {
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, MESSAGE_SYNC);
+        syncProtocol.readSyncMessage(decoder, encoder, this.ydoc, this.originToken);
+        const reply = encoding.toUint8Array(encoder);
+        if (reply.length > 1) {
+          this.websocket?.send(reply);
+        }
+      } else if (messageType === MESSAGE_AWARENESS) {
+        awarenessProtocol.applyAwarenessUpdate(
+          this.awareness,
+          decoding.readVarUint8Array(decoder),
+          this.originToken,
+        );
       }
     };
 
@@ -85,10 +105,16 @@ export class CollaborationClient {
 
     websocket.onclose = () => {
       this.ydoc.off("update", this.handleDocumentUpdate);
+      this.awareness.off("update", this.handleAwarenessUpdate);
       if (this.websocket === websocket) {
         this.websocket = null;
       }
       if (this.destroyed) {
+        awarenessProtocol.removeAwarenessStates(
+          this.awareness,
+          [this.ydoc.clientID],
+          "disconnect",
+        );
         return;
       }
       this.onStatusChange("disconnected");
@@ -103,6 +129,12 @@ export class CollaborationClient {
       this.reconnectTimer = null;
     }
     this.ydoc.off("update", this.handleDocumentUpdate);
+    this.awareness.off("update", this.handleAwarenessUpdate);
+    awarenessProtocol.removeAwarenessStates(
+      this.awareness,
+      [this.ydoc.clientID],
+      "disconnect",
+    );
     this.cleanupSocket();
     this.onStatusChange("disconnected");
   }
@@ -111,10 +143,37 @@ export class CollaborationClient {
     if (origin === this.originToken || this.websocket?.readyState !== WebSocket.OPEN) {
       return;
     }
-
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_SYNC);
     syncProtocol.writeUpdate(encoder, update);
+    this.websocket.send(encoding.toUint8Array(encoder));
+  }
+
+  private handleAwarenessUpdate(
+    { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
+    origin: unknown,
+  ) {
+    if (origin === this.originToken || this.websocket?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const changedClients = [...added, ...updated, ...removed];
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
+    encoding.writeVarUint8Array(
+      encoder,
+      awarenessProtocol.encodeAwarenessUpdate(this.awareness, changedClients),
+    );
+    this.websocket.send(encoding.toUint8Array(encoder));
+  }
+
+  private broadcastAwareness() {
+    if (this.websocket?.readyState !== WebSocket.OPEN) return;
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
+    encoding.writeVarUint8Array(
+      encoder,
+      awarenessProtocol.encodeAwarenessUpdate(this.awareness, [this.ydoc.clientID]),
+    );
     this.websocket.send(encoding.toUint8Array(encoder));
   }
 
@@ -147,4 +206,12 @@ export class CollaborationClient {
       websocket.close();
     }
   }
+}
+
+function hashCode(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  }
+  return h;
 }

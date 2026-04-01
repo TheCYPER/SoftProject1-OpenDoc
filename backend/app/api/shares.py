@@ -3,9 +3,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
+from app.models.audit_event import AuditEvent
 from app.models.document_share import DocumentShare
 from app.models.user import User
-from app.schemas.document import ShareCreate, ShareResponse
+from app.schemas.document import ShareCreate, ShareResponse, ShareUpdate
 from app.services.permissions import check_document_access
 
 router = APIRouter(tags=["shares"])
@@ -35,7 +36,7 @@ async def create_share(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    await check_document_access(db, document_id, current_user, required_role="owner")
+    doc = await check_document_access(db, document_id, current_user, required_role="owner")
     share = DocumentShare(
         document_id=document_id,
         grantee_type=body.grantee_type,
@@ -46,6 +47,62 @@ async def create_share(
         created_by=current_user.user_id,
     )
     db.add(share)
+    await db.flush()
+
+    audit = AuditEvent(
+        workspace_id=doc.workspace_id,
+        document_id=document_id,
+        actor_user_id=current_user.user_id,
+        event_type="share.created",
+        target_ref=body.grantee_ref,
+        metadata_json={"role": body.role, "grantee_type": body.grantee_type},
+    )
+    db.add(audit)
+    await db.commit()
+    await db.refresh(share)
+    return share
+
+
+@router.patch(
+    "/api/documents/{document_id}/shares/{share_id}",
+    response_model=ShareResponse,
+)
+async def update_share(
+    document_id: str,
+    share_id: str,
+    body: ShareUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    doc = await check_document_access(db, document_id, current_user, required_role="owner")
+    result = await db.execute(
+        select(DocumentShare).where(
+            DocumentShare.share_id == share_id,
+            DocumentShare.document_id == document_id,
+        )
+    )
+    share = result.scalar_one_or_none()
+    if share is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+
+    changes: dict = {}
+    if body.role is not None:
+        changes["role"] = {"from": share.role, "to": body.role}
+        share.role = body.role
+    if body.allow_ai is not None:
+        share.allow_ai = body.allow_ai
+    if body.expires_at is not None:
+        share.expires_at = body.expires_at
+
+    audit = AuditEvent(
+        workspace_id=doc.workspace_id,
+        document_id=document_id,
+        actor_user_id=current_user.user_id,
+        event_type="share.updated",
+        target_ref=share.grantee_ref,
+        metadata_json={"share_id": share_id, "changes": changes},
+    )
+    db.add(audit)
     await db.commit()
     await db.refresh(share)
     return share
@@ -61,7 +118,7 @@ async def delete_share(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    await check_document_access(db, document_id, current_user, required_role="owner")
+    doc = await check_document_access(db, document_id, current_user, required_role="owner")
     result = await db.execute(
         select(DocumentShare).where(
             DocumentShare.share_id == share_id,
@@ -71,5 +128,17 @@ async def delete_share(
     share = result.scalar_one_or_none()
     if share is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+
+    grantee_ref = share.grantee_ref
     await db.delete(share)
+
+    audit = AuditEvent(
+        workspace_id=doc.workspace_id,
+        document_id=document_id,
+        actor_user_id=current_user.user_id,
+        event_type="share.deleted",
+        target_ref=grantee_ref,
+        metadata_json={"share_id": share_id},
+    )
+    db.add(audit)
     await db.commit()

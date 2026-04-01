@@ -1,7 +1,9 @@
+import html
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import HTMLResponse
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -137,3 +139,70 @@ async def delete_document(
     doc = await check_document_access(db, document_id, current_user, required_role="owner")
     doc.status = "deleted"
     await db.commit()
+
+
+@router.get("/api/documents/{document_id}/export", response_class=HTMLResponse)
+async def export_document(
+    document_id: str,
+    format: str = Query(default="html", pattern="^(html|txt)$"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Export document as HTML or plain text."""
+    doc = await check_document_access(db, document_id, current_user, required_role="viewer")
+    title = html.escape(doc.title)
+    content = doc.content or {"type": "doc", "content": []}
+
+    def node_to_html(node: dict) -> str:
+        node_type = node.get("type", "")
+        children = "".join(node_to_html(c) for c in node.get("content", []))
+        text = html.escape(node.get("text", ""))
+        marks = {m["type"] for m in node.get("marks", [])}
+        if node_type == "text":
+            if "bold" in marks:
+                text = f"<strong>{text}</strong>"
+            if "italic" in marks:
+                text = f"<em>{text}</em>"
+            if "code" in marks:
+                text = f"<code>{text}</code>"
+            return text
+        if node_type == "paragraph":
+            return f"<p>{children}</p>"
+        if node_type == "heading":
+            level = node.get("attrs", {}).get("level", 1)
+            return f"<h{level}>{children}</h{level}>"
+        if node_type == "bulletList":
+            return f"<ul>{children}</ul>"
+        if node_type == "orderedList":
+            return f"<ol>{children}</ol>"
+        if node_type == "listItem":
+            return f"<li>{children}</li>"
+        if node_type == "blockquote":
+            return f"<blockquote>{children}</blockquote>"
+        if node_type == "codeBlock":
+            return f"<pre><code>{children}</code></pre>"
+        if node_type == "horizontalRule":
+            return "<hr/>"
+        return children
+
+    body_html = node_to_html(content)
+
+    if format == "txt":
+        import re
+        plain = re.sub(r"<[^>]+>", "", body_html)
+        return HTMLResponse(
+            content=plain,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{doc.title}.txt"'},
+        )
+
+    page = (
+        f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        f"<title>{title}</title>"
+        f"<style>body{{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px}}"
+        f"</style></head><body><h1>{title}</h1>{body_html}</body></html>"
+    )
+    return HTMLResponse(
+        content=page,
+        headers={"Content-Disposition": f'attachment; filename="{doc.title}.html"'},
+    )
