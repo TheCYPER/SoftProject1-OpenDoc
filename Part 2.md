@@ -73,46 +73,36 @@ System_Ext(llm, "Third-Party LLM Provider", "Hosted LLM API")
 
 System_Boundary(prod, "Collaborative Document Editor Platform") {
   Container(web, "AC-01 Frontend Editor UI", "React + TipTap/ProseMirror + Yjs", "Rich-text editing, local state, AI panel, offline/reconnect")
-  Container(api, "AC-03 Backend API Service", "NestJS REST API", "Document CRUD, sharing, versioning, export, audit, session bootstrap")
-  Container(sync, "AC-02 Collaboration / Real-Time Sync", "Yjs/Hocuspocus WebSocket", "Merges updates, awareness, presence broadcast")
-  Container(ai, "AC-07 AI Orchestration Service", "Node.js worker + queue", "Prompts, AI policy/quota, LLM calls, suggestion storage")
-  ContainerDb(db, "Platform Metadata DB", "PostgreSQL", "Users, workspaces, doc metadata, shares, versions, AI metadata, audit logs")
-  ContainerDb(blob, "Snapshot / Export Storage", "S3-compatible", "Doc snapshots, version checkpoints, exports")
-  Container(queue, "Redis", "Redis", "Pub/sub, presence fan-out, AI job queue")
+  Container(api, "AC-03 Backend API Service", "Python FastAPI REST API", "Document CRUD, sharing, versioning, export, audit")
+  Container(sync, "AC-02 Collaboration / Real-Time Sync", "Yjs over FastAPI WebSocket", "Merges updates via CRDT, awareness, presence broadcast")
+  Container(ai, "AC-07 AI Orchestration Service", "Merged into FastAPI backend", "Prompts, AI policy/quota, multi-provider LLM calls, suggestion storage")
+  ContainerDb(db, "Platform Database", "SQLite (aiosqlite)", "Users, workspaces, doc metadata + content, shares, versions, AI metadata, audit logs")
 }
 
 UpdateLayoutConfig($c4ShapeInRow="4", $c4BoundaryInRow="1")
 
-Rel(api, idp, "Verifies identity and session", "OIDC")
-Rel(ai, llm, "Prompts and completions", "HTTPS")
-Rel(editor, web, "Edits, comments, reviews suggestions", "HTTPS")
+Rel(editor, web, "Edits, reviews suggestions", "HTTPS")
 Rel(admin, web, "Policy and permissions", "HTTPS")
 Rel(web, api, "Documents, versions/shares, AI jobs", "HTTPS")
 Rel(web, sync, "Live session, presence updates", "WebSocket")
-Rel(api, db, "Metadata and audit", "SQL")
-Rel(api, blob, "Snapshots and exports", "S3 API")
-Rel(api, queue, "Session and AI job events", "Redis")
-Rel(sync, queue, "Room fan-out, presence state", "Redis")
-Rel(sync, db, "Doc/session metadata, checkpoints", "SQL")
-Rel(sync, blob, "CRDT snapshots", "S3 API")
-Rel(ai, queue, "AI jobs, status events", "Redis")
-Rel(ai, db, "Policy, AI metadata", "SQL")
-Rel(ai, blob, "Snapshots and artifacts", "S3 API")
+Rel(api, db, "Metadata, content, and audit", "SQL via SQLAlchemy async")
+Rel(sync, db, "Yjs CRDT state persistence", "SQL")
+Rel(ai, llm, "Prompts and completions", "HTTPS via httpx")
+Rel(ai, db, "AI interaction and suggestion metadata", "SQL")
 ```
 
 **Explanation**
-The container split is intentional. AC-01 is optimized for responsive editing and local recovery. AC-02 handles low-latency synchronization and AC-11 presence tracking. AC-03 owns stable business APIs and security-sensitive resource checks. AC-07 isolates long-running, failure-prone, and cost-sensitive AI work. AC-12 is implemented as a persistence layer combining PostgreSQL for metadata and object storage for snapshots and exports.
+The container split is intentional. AC-01 is optimized for responsive editing and local recovery. AC-02 handles low-latency synchronization and AC-11 presence tracking via Yjs awareness protocol. AC-03 owns stable business APIs and security-sensitive resource checks. AC-07 is merged into the FastAPI backend for PoC simplicity but retains a separate service layer that can be extracted later. AC-12 is implemented as SQLite with document content stored as JSON and Yjs CRDT state as binary within the database.
 
 #### Container responsibilities, technology choices, and communication
 
 | Container | Main responsibility | Technology choice | Communication |
 | --- | --- | --- | --- |
-| AC-01 Frontend Editor UI | Rich-text editor, local state, collaborator presence, AI suggestion review | React, TipTap/ProseMirror, Yjs client, TypeScript | HTTPS to AC-03, WebSocket to AC-02 |
-| AC-03 Backend API Service | Resource APIs, session bootstrap, permissions, versions, audit, export | NestJS REST API | HTTPS with AC-01, SQL to PostgreSQL, object storage API, Redis publish |
-| AC-02 Collaboration / Real-Time Sync Service | Real-time document updates, awareness, reconnect flow, AC-11 Presence Service | Yjs/Hocuspocus-style server over WebSocket | WebSocket with AC-01, Redis pub/sub, storage APIs for snapshots |
-| AC-07 AI Orchestration Service | AI job execution, prompt building, policy/quota checks, AI result persistence | Node.js worker/service with queue consumer | Redis queue, SQL/object storage reads, HTTPS to LLM provider |
-| AC-12 Document Database / Storage | Persistent metadata, snapshots, versions, exports | PostgreSQL plus S3-compatible object storage | SQL and object storage APIs |
-| Redis | Fan-out, presence, and queueing infrastructure | Redis | Internal infrastructure only; not directly exposed to clients |
+| AC-01 Frontend Editor UI | Rich-text editor, local state, collaborator presence, AI suggestion review | React 19, TipTap/ProseMirror, Yjs client, TypeScript | HTTPS to AC-03, WebSocket to AC-02 |
+| AC-03 Backend API Service | Resource APIs, permissions, versions, audit, export | Python FastAPI with SQLAlchemy async | HTTPS with AC-01, SQL to SQLite via aiosqlite |
+| AC-02 Collaboration / Real-Time Sync Service | Real-time document updates, Yjs CRDT sync, awareness, reconnect flow, AC-11 Presence Service | FastAPI WebSocket with y-protocols | WebSocket with AC-01, Yjs state persisted to SQLite |
+| AC-07 AI Orchestration Service | AI job execution, prompt building, quota checks, AI result persistence | Merged into FastAPI backend as a service layer with abstract provider interface | SQL reads/writes, HTTPS to LLM providers (OpenAI, Claude, Ollama) via httpx |
+| AC-12 Document Database / Storage | Persistent metadata, document content (JSON), Yjs CRDT state (binary), versions, AI logs | SQLite via aiosqlite with SQLAlchemy async ORM | SQL via async sessions |
 
 ### Level 3 - Component Diagram for AC-07 AI Orchestration Service
 
@@ -120,11 +110,10 @@ The container split is intentional. AC-01 is optimized for responsive editing an
 %%{init: {'c4': {'diagramMarginX': 90, 'diagramMarginY': 70, 'c4ShapeMargin': 180, 'boxMargin': 45, 'c4ShapePadding': 18}}}%%
 C4Component
 title AC-07 AI Orchestration Service - Component Diagram
-Container(api, "AC-03 Backend API Service", "NestJS REST API", "Creates AI jobs and reads suggestions")
-System_Ext(llm, "Third-Party LLM Provider", "Hosted LLM API")
-ContainerDb(db, "Platform Metadata DB", "PostgreSQL", "Policies, AI interactions, suggestion metadata")
-ContainerDb(blob, "Snapshot / Export Storage", "S3-compatible object storage", "Snapshots and large artifacts")
-Container(sync, "AC-02 Collaboration / Real-Time Sync Service", "WebSocket service", "Publishes job status to collaborators")
+Container(api, "AC-03 Backend API Service", "Python FastAPI", "Creates AI jobs and reads suggestions")
+System_Ext(llm, "LLM Providers", "OpenAI, Claude, or Ollama")
+ContainerDb(db, "Platform Database", "SQLite (aiosqlite)", "Policies, AI interactions, suggestion metadata")
+Container(sync, "AC-02 Collaboration / Real-Time Sync Service", "FastAPI WebSocket", "Publishes job status to collaborators")
 
 Container_Boundary(ai, "AC-07 AI Orchestration Service") {
   Component(policyGuard, "Policy & Quota Guard", "Domain service", "Checks policy, entitlement, and quota")
@@ -148,8 +137,7 @@ Rel(providerAdapter, llm, "Generate completion")
 Rel(requestHandler, suggestionComposer, "Build reviewable suggestion")
 Rel(suggestionComposer, auditLogger, "Persist result metadata")
 Rel(auditLogger, db, "Write interaction metadata")
-Rel(contextResolver, db, "Read metadata refs")
-Rel(contextResolver, blob, "Read large snapshots")
+Rel(contextResolver, db, "Read metadata and document content")
 Rel(requestHandler, eventPublisher, "Publish job status")
 Rel(eventPublisher, sync, "Push status to collaborators")
 ```
@@ -164,17 +152,17 @@ The system is decomposed into modules that can be developed and tested with limi
 | Module | What it does | Depends on | Interface exposed to other modules |
 | --- | --- | --- | --- |
 | AC-01 Frontend Editor UI | Renders the editor, manages local document state, displays collaborator presence, shows AI suggestions, and handles offline/reconnect UX | Shared contracts package, AC-03 APIs, AC-02 session token and WebSocket channel | React components, editor commands, API client methods, WebSocket event handlers |
-| AC-02 Collaboration / Real-Time Sync Service | Accepts document updates, merges concurrent edits, distributes remote updates, and hosts AC-11 Presence Service | Redis pub/sub, AC-12 snapshots, session claims from AC-03 | WebSocket room protocol: `doc.update`, `doc.sync`, `presence.update`, `sync.state` |
-| AC-11 Presence Service | Tracks who is connected, active cursors, and summarized presence state for crowded documents | AC-02 session room, Redis | Presence payloads to AC-01; collaborator list and cursor metadata |
+| AC-02 Collaboration / Real-Time Sync Service | Accepts document updates, merges concurrent edits via Yjs CRDT, distributes remote updates, and hosts AC-11 Presence Service | AC-12 (SQLite for Yjs state persistence), session claims from AC-03 | Binary WebSocket protocol using y-protocols: sync messages (type 0) and awareness messages (type 1) |
+| AC-11 Presence Service | Tracks who is connected, active cursors, and summarized presence state for crowded documents | AC-02 session room, Yjs awareness protocol | Presence payloads to AC-01; collaborator list and cursor metadata |
 | AC-03 Backend API Service | Entry point for document CRUD, versioning, sharing, export, session bootstrap, and AI job creation | AC-04, AC-05, AC-06, AC-09, AC-10, AC-07 | REST/JSON endpoints under `/api/...` |
 | AC-04 Document Service | Creates documents, loads metadata, resolves current snapshot pointers, and enforces document lifecycle rules | AC-06, AC-12 | Internal service methods and REST handlers such as `POST /documents`, `GET /documents/{id}` |
 | AC-05 Versioning Service | Creates immutable checkpoints, lists version history, and restores previous versions as new current versions | AC-04, AC-06, AC-12 | `GET /documents/{id}/versions`, `POST /documents/{id}/versions/{versionId}/restore` |
 | AC-06 Auth & Authorization Service | Verifies identity claims, evaluates workspace role plus document role, and gates AI usage by policy | Identity provider claims, workspace policy tables, share records | `authorize(user, action, resource)` and permission metadata returned to the client |
 | AC-07 AI Orchestration Service | Executes AI jobs, builds prompts, selects models, and publishes suggestion results | AC-06 policy data, AC-12, AC-08 | AI job queue interface and status events |
 | AC-08 AI Provider Adapter | Normalizes calls to the chosen LLM provider and shields the rest of the system from vendor changes | Third-party LLM API | Provider-independent `generate(prompt, schema, modelProfile)` interface |
-| AC-09 Export Service | Produces PDF/DOCX exports from the current snapshot and optionally annotates pending AI suggestions | AC-04, AC-05, AC-12 | `POST /documents/{id}/exports` |
+| AC-09 Export Service | Produces HTML and plain text exports from the current document content | AC-04, AC-12 | `GET /documents/{id}/export?format=html\|txt` |
 | AC-10 Audit / Activity Log Service | Records version restores, sharing changes, AI requests, AI outcomes, and security-relevant events | AC-06, AC-12 | Audit write interface and read APIs for permitted reviewers |
-| AC-12 Document Database / Storage | Stores metadata, access rules, versions, snapshots, AI logs, and exports | PostgreSQL, object storage | Persistence contracts used by AC-02, AC-03, and AC-07 |
+| AC-12 Document Database / Storage | Stores metadata, document content (JSON), Yjs state (binary), access rules, versions, AI logs, and exports | SQLite via aiosqlite with SQLAlchemy async ORM | Persistence contracts used by AC-02, AC-03, and AC-07 |
 
 ### AI Integration Design
 
@@ -298,36 +286,9 @@ POST /api/documents
 
 | Method / channel | Path | Purpose | Key fields |
 | --- | --- | --- | --- |
-| `POST` | `/api/documents/{documentId}/sessions` | Bootstrap a collaboration session after permission checks | Response: `sessionId`, `websocketUrl`, `realtimeToken`, `baseRevisionId`, `presenceUser` |
-| `WS` | `/realtime/documents/{documentId}?token=...` | Join the live editing room | Events: `doc.sync`, `doc.update`, `presence.update`, `sync.state`, `ai.job.status` |
+| `WS` | `/ws/documents/{documentId}?token=...` | Join the live editing room with JWT auth | Binary messages using y-protocols: sync (type 0) and awareness (type 1) |
 
-Example session bootstrap response:
-
-```json
-{
-  "sessionId": "sess_789",
-  "websocketUrl": "wss://api.example.com/realtime/documents/doc_456",
-  "realtimeToken": "signed-short-lived-token",
-  "baseRevisionId": "rev_1042",
-  "presenceUser": {
-    "userId": "usr_001",
-    "displayName": "Alice",
-    "color": "#1f6feb"
-  }
-}
-```
-
-Example event envelope:
-
-```json
-{
-  "type": "ai.job.status",
-  "documentId": "doc_456",
-  "jobId": "ai_222",
-  "status": "ready",
-  "suggestionId": "sug_333"
-}
-```
+The WebSocket connection authenticates via JWT token in the query parameter. The server verifies the token and checks document access permissions before allowing the connection. The Yjs CRDT protocol handles document synchronization (sync step 1, step 2, and incremental updates) and awareness (cursor positions, user presence). No separate session bootstrap endpoint is needed — the client connects directly with its JWT token.
 
 #### AI assistant invocation
 
@@ -408,13 +369,11 @@ Authentication is required because the system contains private documents, audita
 
 Document access is controlled by both workspace membership and document-specific sharing rules. The main roles and actions are:
 
-| Role | Read | Comment | Edit | Share | Restore versions | Invoke AI | Review AI history |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Owner | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Editor | Yes | Yes | Yes | If granted | If granted | Yes if policy allows | Usually no unless explicitly granted |
-| Commenter | Yes | Yes | No | No | No | Optional, policy-controlled | No |
-| Viewer | Yes | No | No | No | No | No | No |
-| Workspace Admin | Policy-driven across workspace | Policy-driven | Policy-driven | Can manage workspace defaults | Usually by exception | Can configure AI policy | Can review logs where policy permits |
+| Role | Read | Edit | Share | Restore versions | Invoke AI | Review AI history |
+| --- | --- | --- | --- | --- | --- | --- |
+| Owner | Yes | Yes | Yes | Yes | Yes | Yes |
+| Editor | Yes | Yes | If granted | If granted | Yes if policy allows | Usually no unless explicitly granted |
+| Viewer | Yes | No | No | No | No | No |
 
 Actions beyond basic read/write are explicitly protected:
 
@@ -438,11 +397,11 @@ The system uses a **push-based real-time communication model** for editing and p
 
 **When a user first opens a shared document**
 
-1. AC-01 calls `GET /api/documents/{id}` to load metadata, current permissions, and the latest snapshot reference.
-2. AC-01 calls `POST /api/documents/{id}/sessions` to obtain a short-lived real-time token and base revision.
-3. The client connects to AC-02 over WebSocket, joins the document room, and receives any missed updates.
-4. AC-11 Presence Service broadcasts the current participant list and cursor awareness state.
-5. The editor becomes fully interactive once local state and live state are synchronized.
+1. AC-01 calls `GET /api/documents/{id}` to load metadata, current permissions, and the latest content.
+2. The client connects to AC-02 over WebSocket at `/ws/documents/{id}?token=JWT`, authenticating via the JWT token.
+3. The server sends a Yjs sync step 1 message; the client responds with its state, and the server sends any missing updates.
+4. AC-11 Presence Service (via Yjs awareness protocol) broadcasts the current participant list and cursor state.
+5. The editor becomes fully interactive once local Yjs state and server state are synchronized.
 
 **When connectivity is lost and returns**
 
@@ -470,67 +429,57 @@ A multi-repo setup would make sense for a much larger organization with separate
 
 ```text
 softassignment1/
-├── apps/
-│   ├── web/
-│   │   ├── src/
-│   │   │   ├── app/
-│   │   │   ├── features/
-│   │   │   │   ├── editor/
-│   │   │   │   ├── presence/
-│   │   │   │   ├── ai/
-│   │   │   │   ├── sharing/
-│   │   │   │   └── versions/
-│   │   │   ├── lib/
-│   │   │   │   ├── api/
-│   │   │   │   ├── realtime/
-│   │   │   │   └── auth/
-│   │   │   └── test/
-│   ├── api/
-│   │   ├── src/
-│   │   │   ├── modules/
-│   │   │   │   ├── documents/
-│   │   │   │   ├── versions/
-│   │   │   │   ├── shares/
-│   │   │   │   ├── authz/
-│   │   │   │   ├── audit/
-│   │   │   │   └── export/
-│   │   │   ├── controllers/
-│   │   │   ├── repositories/
-│   │   │   └── test/
-│   ├── realtime/
-│   │   ├── src/
-│   │   │   ├── rooms/
-│   │   │   ├── presence/
-│   │   │   ├── persistence/
-│   │   │   └── test/
-│   └── ai-worker/
-│       ├── src/
-│       │   ├── jobs/
-│       │   ├── context/
-│       │   ├── prompts/
-│       │   ├── providers/
-│       │   ├── suggestion/
-│       │   └── test/
-├── packages/
-│   ├── contracts/
-│   ├── editor-schema/
-│   ├── authz-rules/
-│   ├── prompt-catalog/
-│   ├── shared-config/
-│   └── ui/
-├── tests/
-│   ├── integration/
-│   ├── e2e/
-│   └── fixtures/
-├── infra/
-│   ├── docker/
-│   ├── compose/
-│   ├── migrations/
-│   └── env/
-├── docs/
-│   └── architecture/
-├── scripts/
+├── backend/                      Python FastAPI backend
+│   ├── app/
+│   │   ├── main.py               FastAPI app factory with lifespan, CORS, rate limiting
+│   │   ├── config.py             Pydantic Settings (env-based config)
+│   │   ├── database.py           Async SQLAlchemy engine + session factory
+│   │   ├── models/               SQLAlchemy ORM models (11 tables)
+│   │   │   ├── user.py
+│   │   │   ├── workspace.py      Workspace, WorkspaceMember, Team, TeamMember
+│   │   │   ├── document.py
+│   │   │   ├── document_share.py
+│   │   │   ├── document_version.py
+│   │   │   ├── ai_interaction.py
+│   │   │   ├── ai_suggestion.py
+│   │   │   └── audit_event.py
+│   │   ├── schemas/              Pydantic request/response schemas
+│   │   ├── api/                  FastAPI routers
+│   │   │   ├── deps.py           Dependency injection (DB session, JWT auth)
+│   │   │   ├── users.py          Register, login, profile
+│   │   │   ├── documents.py      CRUD + export
+│   │   │   ├── shares.py         Share management
+│   │   │   ├── versions.py       Version list + restore
+│   │   │   ├── ai_jobs.py        AI job lifecycle
+│   │   │   ├── audit.py          Audit trail
+│   │   │   ├── workspaces.py     AI policy management
+│   │   │   └── health.py         Health check
+│   │   ├── services/
+│   │   │   ├── permissions.py    Role-based access control
+│   │   │   └── ai/               AI service layer
+│   │   │       ├── ai_service.py         Orchestration
+│   │   │       ├── providers/            Abstract base + OpenAI, Claude, Ollama
+│   │   │       └── prompts/templates.py  Versioned prompt templates
+│   │   ├── realtime/
+│   │   │   └── websocket.py      Yjs CRDT sync over WebSocket
+│   │   └── tests/                Pytest async tests (9 modules)
+│   ├── alembic/                  Database migrations
+│   ├── Dockerfile
+│   └── requirements.txt
+├── frontend/                     React + Vite + TypeScript
+│   ├── src/
+│   │   ├── pages/                LoginPage, DocumentListPage, EditorPage
+│   │   ├── components/           AIPanel, ShareModal, VersionPanel, PresenceBar
+│   │   ├── api/client.ts         Axios wrapper with JWT interceptor
+│   │   ├── lib/collaboration.ts  Yjs WebSocket provider + awareness
+│   │   ├── types/index.ts        TypeScript interfaces
+│   │   ├── App.tsx               Router setup
+│   │   └── main.tsx              Entry point
+│   ├── Dockerfile
+│   └── package.json
+├── docker-compose.yml            Backend + Frontend services
 ├── .env.example
+├── CLAUDE.md
 └── README.md
 ```
 
@@ -538,42 +487,45 @@ softassignment1/
 
 | Path | Purpose |
 | --- | --- |
-| `apps/web` | User-facing editor UI, local editor state, sharing screens, AI review panel, and API/realtime clients |
-| `apps/api` | REST API routes, resource controllers, domain services for documents, versions, permissions, audit, and export |
-| `apps/realtime` | Dedicated live-collaboration server handling CRDT synchronization and presence |
-| `apps/ai-worker` | Queue-driven AI orchestration logic, context resolution, prompt assembly, provider adapters, and suggestion composition |
-| `packages/contracts` | Shared TypeScript types and runtime validation schemas for API requests, responses, and event payloads |
-| `packages/editor-schema` | Shared editor node schema, content serialization helpers, and selection range utilities |
-| `packages/authz-rules` | Permission matrix, action enums, and policy evaluation helpers reused in API and UI gating |
-| `packages/prompt-catalog` | Versioned prompt templates and model profiles |
-| `packages/shared-config` | Environment parsing, feature flags, and service discovery configuration |
-| `tests` | Cross-app integration tests, end-to-end scenarios, and reusable fixtures |
-| `infra` | Local development containers, database migrations, and deployment-related manifests |
-| `docs/architecture` | Mermaid source files, ADRs, and exported diagram artifacts used in the report |
+| `backend/app/api/` | FastAPI routers for documents, versions, shares, AI jobs, audit, workspaces, users, and health |
+| `backend/app/models/` | SQLAlchemy ORM models for all 11 database tables |
+| `backend/app/schemas/` | Pydantic request/response schemas enforcing API contracts |
+| `backend/app/services/ai/` | AI orchestration: abstract provider interface, OpenAI/Claude/Ollama implementations, versioned prompt templates |
+| `backend/app/services/permissions.py` | Role-based access control with role hierarchy (viewer < editor < admin) and share expiry |
+| `backend/app/realtime/` | Yjs CRDT synchronization and awareness over FastAPI WebSocket |
+| `backend/app/tests/` | Pytest async tests using in-memory SQLite for auth, CRUD, versions, shares, AI, audit, export, realtime |
+| `backend/alembic/` | Alembic database migrations |
+| `frontend/src/pages/` | Page components: LoginPage, DocumentListPage, EditorPage |
+| `frontend/src/components/` | UI components: AIPanel, ShareModal, VersionPanel, PresenceBar, Toast |
+| `frontend/src/lib/` | Collaboration client (Yjs WebSocket provider with reconnect logic) |
+| `frontend/src/api/` | Axios HTTP client with JWT interceptor |
+| `frontend/src/types/` | TypeScript interfaces mirroring backend Pydantic schemas |
 
 ### Configuration management
 
 Secrets such as API keys, database URLs, session secrets, and LLM credentials do **not** live in source control. The repository includes:
 
-* `.env.example` with placeholder names only,
-* strongly validated runtime configuration in `packages/shared-config`,
-* environment-specific secret injection through the deployment platform or secret manager.
+* `.env.example` with placeholder names and default values,
+* strongly validated runtime configuration via `pydantic-settings` in `backend/app/config.py`,
+* environment variables loaded from `.env` file at startup and validated by Pydantic.
 
-This keeps local setup understandable without leaking actual credentials.
+Configuration includes: `DATABASE_URL`, `SECRET_KEY`, `AI_DEFAULT_PROVIDER`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, and optional `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` with their base URLs.
 
 ### Testing structure
 
-Tests are placed close to source for unit tests and in top-level `tests/` for cross-service scenarios:
+All backend tests live in `backend/app/tests/` and run with `pytest` + `pytest-asyncio` against an in-memory SQLite database:
 
-* **Unit tests** beside modules in each app for pure logic such as permission evaluation, prompt assembly, or version-restore rules.
-* **Integration tests** in `tests/integration` for document CRUD, sharing enforcement, version restore, and AI job lifecycle with a fake provider.
-* **End-to-end tests** in `tests/e2e` for browser-driven flows such as create document, join session, request AI summary, and accept a suggestion.
+* **test_health.py** — health check endpoint
+* **test_auth.py** — registration, login, duplicate email rejection, wrong password, unauthenticated access
+* **test_documents.py** — document CRUD lifecycle, not-found handling, unauthorized access
+* **test_versions.py** — version listing and restore
+* **test_shares.py** — share creation, listing, updating, deletion, and permission checks
+* **test_ai.py** — AI job lifecycle (create, fetch suggestion, apply, reject), empty text validation
+* **test_audit.py** — audit trail retrieval and event recording
+* **test_export.py** — HTML and plain text export
+* **test_realtime.py** — WebSocket connection, message flow, state persistence
 
-AI integration should not call a real model in every test run. The default test strategy uses:
-
-* a fake AC-08 provider adapter returning deterministic structured outputs,
-* snapshot tests for prompt templates and response parsing,
-* a small manual or nightly smoke test against the real provider to detect API drift.
+AI tests mock the provider via `unittest.mock.patch` to avoid calling real LLM APIs. The default test strategy uses deterministic mock responses rather than real provider calls.
 
 ## 2.4 Data Model
 
@@ -585,6 +537,7 @@ erDiagram
         uuid user_id PK
         string email
         string display_name
+        string hashed_password
         string auth_subject
         datetime created_at
     }
@@ -621,9 +574,10 @@ erDiagram
         uuid workspace_id FK
         uuid created_by FK
         string title
+        json content
         string content_format
-        string current_snapshot_key
         string current_revision_id
+        binary yjs_state
         string status
         datetime created_at
         datetime updated_at
@@ -639,12 +593,13 @@ erDiagram
         string link_token_hash
         datetime expires_at
         uuid created_by FK
+        datetime created_at
     }
 
     DOCUMENT_VERSION {
         uuid version_id PK
         uuid document_id FK
-        string snapshot_key
+        json snapshot
         string base_revision_id
         string reason
         uuid created_by FK
@@ -671,6 +626,8 @@ erDiagram
     AI_SUGGESTION {
         uuid suggestion_id PK
         uuid interaction_id FK
+        text original_text
+        text suggested_text
         string disposition
         boolean stale
         json diff_json
@@ -714,10 +671,11 @@ erDiagram
 The current document state is represented by:
 
 * metadata in the `DOCUMENT` table,
-* a `current_snapshot_key` pointing to the latest serialized editor snapshot in object storage,
-* a `current_revision_id` used by the real-time and AI systems to detect stale operations.
+* a `content` JSON column storing the ProseMirror document structure,
+* a `yjs_state` binary column storing the Yjs CRDT state for real-time synchronization,
+* a `current_revision_id` used by the AI system to detect stale operations.
 
-This split is deliberate. CRDT/editor snapshots can be large and change frequently, while metadata and permissions need relational queries and server-side authorization checks.
+For the PoC, both content and CRDT state are stored directly in the database rather than in external object storage. This simplifies deployment (no S3 dependency) while keeping the schema extensible for future extraction.
 
 Beyond raw content, a document stores:
 
@@ -759,11 +717,11 @@ Partial acceptance is tracked through `accepted_segments_json`, which stores the
 
 Permissions are modeled through `DOCUMENT_SHARE` plus workspace membership:
 
-* `grantee_type = USER` supports direct user sharing,
-* `grantee_type = TEAM` supports team-level sharing,
-* `grantee_type = LINK` supports link-based access with a hashed token and optional expiry.
+* `grantee_type = USER` supports direct user sharing by email address.
+* The `link_token_hash` field is reserved for future link-based sharing but is not yet implemented.
+* Team-based sharing (`grantee_type = TEAM`) is modeled in the schema but not yet exposed in the API.
 
-Each share rule stores the granted role and whether AI invocation is allowed for that share. Effective permission is computed from workspace role, document share, and workspace AI policy.
+Each share rule stores the granted role (`viewer` or `editor`) and whether AI invocation is allowed for that share (`allow_ai` flag). The document creator has implicit owner access. Access checks also verify share expiry (`expires_at`) when set.
 
 ## 2.5 Architecture Decision Records (ADRs)
 
@@ -818,19 +776,19 @@ Negative: extra UI complexity, additional persistence, and a more complex apply 
 **Alternatives considered:**  
 Immediate AI overwrite was rejected as too risky. A loose side panel with no persisted suggestion object was rejected because it would make auditability, partial acceptance, and collaboration conflict handling much weaker.
 
-### ADR-04: Use a TypeScript monorepo with shared contracts and prompt catalog packages
+### ADR-04: Use a monorepo with Python backend and TypeScript frontend
 
 **Status:** Accepted
 
 **Context:**  
-The same project needs a web app, API, real-time service, AI worker, shared schemas, and a working PoC. The team is small and benefits from fast refactoring and one CI pipeline more than from strict repository separation.
+The same project needs a web app, API, real-time service, AI integration, and a working PoC. The team is small and benefits from fast refactoring and one CI pipeline more than from strict repository separation.
 
 **Decision:**  
-Keep all applications and shared packages in one monorepo. Shared API contracts, editor schema helpers, authorization rules, and prompt templates live in reusable packages rather than being copied between services.
+Keep the backend (Python/FastAPI) and frontend (React/TypeScript) in one monorepo. The backend uses Pydantic schemas as the source of truth for API contracts; the frontend mirrors these with TypeScript interfaces. AI orchestration is merged into the backend as a service layer rather than a separate worker, simplifying deployment for the PoC.
 
 **Consequences:**  
-Positive: simpler cross-cutting changes, fewer schema mismatches, faster onboarding, and easier alignment between Part 2 architecture and Part 4 code.  
-Negative: a larger repository, the need for careful package boundaries, and potentially broader CI runs unless pipelines are scoped.
+Positive: simpler cross-cutting changes, fewer schema mismatches, faster onboarding, single Docker Compose for the full stack, and easier alignment between Part 2 architecture and Part 4 code.  
+Negative: two languages in one repo (Python + TypeScript), API contracts must be kept in sync manually between Pydantic schemas and TypeScript interfaces.
 
 **Alternatives considered:**  
-Separate frontend and backend repositories were considered, but they would create avoidable coordination overhead for a semester project. Copying schemas between services was rejected because it would almost guarantee drift between architecture, backend implementation, and frontend expectations.
+Separate frontend and backend repositories were considered, but they would create avoidable coordination overhead for a semester project. A TypeScript-only stack (NestJS) was considered but rejected in favor of Python/FastAPI for its stronger async ecosystem, simpler AI provider integration via httpx, and the team's existing Python experience.
