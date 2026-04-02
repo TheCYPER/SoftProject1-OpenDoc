@@ -234,15 +234,35 @@ Infrastructure, data modeling, and testing do not produce user-visible features,
 | **M5: Document Sharing & Permissions** | Apr 1 | Apr 1 | Done |
 | *Acceptance criteria:* Owner can share a document with another user as editor or viewer. Viewers cannot edit (enforced in both frontend and backend). Verified by PR #4 merge. | | | |
 
+### Planned Milestones (Remainder of Semester)
+
+| Milestone | Target Date | Status |
+|-----------|-------------|--------|
+| **M6: AI Permission Enforcement & Policy Controls** | Apr 8 | Planned |
+| *Acceptance criteria:* AI job endpoints enforce document role + workspace AI policy; unauthorized AI invocation returns `403` with clear reason; tests cover allowed and denied cases for owner/editor/viewer and policy-disabled scenarios. | | |
+| **M7: AI Suggestion Apply/Revert Consistency** | Apr 15 | Planned |
+| *Acceptance criteria:* Applying an AI suggestion updates document content and creates a corresponding version checkpoint; reject leaves document unchanged; stale suggestion handling is explicit; tests verify apply/reject/version behavior. | | |
+| **M8: Authorization Hardening for Versions and Audit-Sensitive Actions** | Apr 22 | Planned |
+| *Acceptance criteria:* Version list/restore and other sensitive routes are role-guarded server-side; unauthorized users cannot restore or view restricted history; regression tests added for privilege boundaries. | | |
+| **M9: Architecture-Document Alignment Pass** | Apr 29 | Planned |
+| *Acceptance criteria:* Part 1-3 documents are updated to clearly distinguish target architecture vs current PoC scope; API contracts and role definitions are consistent across sections; traceability matrix remains complete after updates. | | |
+| **M10: Final PoC Stabilization, Demo, and Submission Package** | May 6 | Planned |
+| *Acceptance criteria:* README and run instructions validated on a clean environment; backend test suite passes in CI/local runner; 3-minute demo recorded; final PDF includes editable-source diagram references and submission checklist is complete. | | |
+
 ### Timeline Gantt (Weeks)
 
 ```
-Week        Mar 17  Mar 24  Mar 31  
-            ──────  ──────  ────── 
+Week        Mar 17  Mar 24  Mar 31  Apr 07  Apr 14  Apr 21  Apr 28  May 05
+            ──────  ──────  ──────  ──────  ──────  ──────  ──────  ──────
 M0 Req/Arch ██
 M1 Backend  ██
 M2 Frontend ██
 M3 Editor           ██
 M4 Realtime         ████████
 M5 Sharing                  ██
+M6 AI Policy                        ██
+M7 AI Apply/Revert                         ██
+M8 Auth Hardening                               ██
+M9 Doc Alignment                                       ██
+M10 Finalize/Submit                                           ██
 ```
