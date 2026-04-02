@@ -234,30 +234,15 @@ Infrastructure, data modeling, and testing do not produce user-visible features,
 | **M5: Document Sharing & Permissions** | Apr 1 | Apr 1 | Done |
 | *Acceptance criteria:* Owner can share a document with another user as editor or viewer. Viewers cannot edit (enforced in both frontend and backend). Verified by PR #4 merge. | | | |
 
-### Upcoming Milestones
-
-| Milestone | Target Date | Acceptance Criteria |
-|-----------|-------------|---------------------|
-| **M6: AI Assistant End-to-End** | Apr 7 | User selects text in the editor, chooses an AI action (rewrite, summarize, translate, restructure), receives a suggestion from Ollama, and can accept or reject it. AI job lifecycle (create → poll → apply/reject) works end-to-end. Verified by: (1) manual test with Ollama running in Docker, (2) `test_ai.py` passes with mocked provider. |
-| **M7: Version History & Restore** | Apr 10 | User can view a list of document versions with timestamps, preview a past version, and restore it. Restoring creates a new version (non-destructive). Verified by: (1) `test_versions.py` passes, (2) manual test in the UI showing version list and restore action. |
-| **M8: Docker Compose Full Stack** | Apr 14 | Running `docker-compose up --build` starts backend, frontend, and Ollama. A new user can register, create a document, edit it, share it, and use the AI assistant — all within Docker. Verified by a single end-to-end walkthrough documented in a screen recording or screenshot sequence. |
-| **M9: Part 3 & Part 4 Submission** | Apr 16 | Part 3 (this document) and Part 4 (reflection) are complete and submitted. All code is merged to `main`, tests pass, and the README documents how to run the PoC. |
-| **M10: Final Demo & Presentation** | Apr 21 | Live demo showing: (1) two users collaborating on a document in real-time, (2) AI assistant generating and applying a suggestion, (3) document sharing with permission enforcement, (4) version history and restore. Demo runs from Docker Compose on a single laptop. |
-
 ### Timeline Gantt (Weeks)
 
 ```
-Week        Mar 17  Mar 24  Mar 31  Apr 7   Apr 14  Apr 21
-            ──────  ──────  ──────  ──────  ──────  ──────
+Week        Mar 17  Mar 24  Mar 31  
+            ──────  ──────  ────── 
 M0 Req/Arch ██
 M1 Backend  ██
 M2 Frontend ██
 M3 Editor           ██
 M4 Realtime         ████████
 M5 Sharing                  ██
-M6 AI E2E                           ██
-M7 Versions                         ████
-M8 Docker                                   ██
-M9 Part 3/4                                 ██
-M10 Demo                                            ██
 ```
