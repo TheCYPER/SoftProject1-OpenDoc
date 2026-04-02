@@ -15,6 +15,29 @@ The architecture is driven first by the collaboration experience and only second
 
 Two different rankings would produce a different design. For example, if cost minimization were ranked above collaboration fidelity, a polling-based editor with no dedicated real-time service and only on-demand AI calls would be plausible. This architecture instead prioritizes a trustworthy live-editing experience and therefore accepts the complexity of a specialized synchronization layer.
 
+## Scope Clarification: Target Architecture vs Current PoC
+
+This document intentionally describes both:
+
+* the **target architecture** the team aims to reach during the semester, and
+* the **current PoC scope** implemented for Assignment 1 Part 4.
+
+To avoid ambiguity during grading, the default reading rule is:
+
+* Sections in this Part 2 describe the **target architecture by default**.
+* Any capability not fully implemented in the current codebase is explicitly marked as **PoC-limited** below.
+
+| Area | Target architecture (design intent) | Current PoC scope (implemented now) |
+| --- | --- | --- |
+| AI execution model | Asynchronous job lifecycle with queue-like states, event publication, and non-blocking UX | AI request is handled within API request flow; status is persisted, but no separate worker/queue runtime |
+| AI policy & role gating | Workspace policy + role-based feature controls enforced for invocation and outcomes | Basic policy data model and endpoint exist; enforcement is partial and not complete across all AI paths |
+| Suggestion application model | Suggestion acceptance updates document state with full revision-aware flow | Suggestion records and dispositions are persisted; full end-to-end revision mutation flow is limited |
+| Permissions surface | Uniform least-privilege checks across all sensitive routes | Core document/share permissions are present; some endpoints remain PoC-hardening candidates |
+| Collaboration resiliency | Full reconnect semantics with explicit stale/rebase UX for AI+collaboration interactions | Core Yjs sync and reconnect are functional; advanced stale/rebase UX is partially implemented |
+| Scalability strategy | Horizontally scalable API/realtime services with shared pub/sub layer | Single-process deployment profile suitable for PoC/demo scale |
+
+This clarification is intended to keep architectural depth while making the current implementation boundary explicit and auditable.
+
 ## 2.2 System Design using the C4 Model
 
 The architecture uses the same component IDs introduced in Section 1.5:
