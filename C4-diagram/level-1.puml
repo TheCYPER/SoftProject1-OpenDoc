@@ -1,0 +1,24 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+' uncomment the following line and comment the first to use locally
+' !include C4_Context.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Collaborative Document Editor with AI - System Context
+Person(editor, "Collaborator", "Creates, edits, comments on, shares, and exports documents")
+Person(admin, "Organization Admin", "Manages members, policies, and role-based AI availability")
+Person(reviewer, "Team Lead / Compliance Reviewer", "Reviews version history and AI activity where permitted")
+System_Ext(idp, "Identity Provider", "Authenticates users and may provide SSO")
+System_Ext(llm, "Third-Party LLM Provider", "Processes bounded AI prompts and returns generated suggestions")
+
+System_Boundary(prod, "Collaborative Document Editor Platform") {
+  System(editorPlatform, "Collaborative Document Editor with AI", "Real-time collaborative editor with versioning, sharing, and AI-assisted writing")
+}
+
+Rel(editorPlatform, llm, "Sends AI prompts")
+Rel(editorPlatform, idp, "Authenticates users, resolves identity")
+Rel(editor, editorPlatform, "Edits, collaborates, requests AI help")
+Rel(admin, editorPlatform, "Configures access and AI policies")
+Rel(reviewer, editorPlatform, "Reviews version and AI logs")
+@enduml

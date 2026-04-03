@@ -1,0 +1,37 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+' uncomment the following line and comment the first to use locally
+' !include C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title AC-07 AI Orchestration Service - Component Diagram
+Container(api, "AC-03 Backend API Service", "Python FastAPI", "Creates AI jobs and reads suggestions")
+System_Ext(llm, "LLM Providers", "OpenAI, Claude, or Ollama")
+ContainerDb(db, "Platform Database", "SQLite (aiosqlite)", "Policies, AI interactions, suggestion metadata")
+Container(sync, "AC-02 Collaboration / Real-Time Sync Service", "FastAPI WebSocket", "Publishes job status to collaborators")
+
+Container_Boundary(ai, "AC-07 AI Orchestration Service") {
+  Component(policyGuard, "Policy & Quota Guard", "Domain service", "Checks policy, entitlement, and quota")
+  Component(requestHandler, "AI Job Handler", "Queue consumer / application service", "Validates jobs and coordinates execution")
+  Component(contextResolver, "Context Resolver", "Domain service", "Loads selection context and revision metadata")
+  Component(promptRegistry, "Prompt Template Registry", "Versioned template catalog", "Resolves prompt templates and model settings")
+  Component(eventPublisher, "Result Publisher", "Event publisher", "Publishes job status events to the session")
+  Component(providerAdapter, "AC-08 AI Provider Adapter", "Provider abstraction", "Maps requests and responses to the LLM provider")
+  Component(suggestionComposer, "Suggestion Composer", "Diff and proposal builder", "Builds reviewable suggestions and stale/conflict flags")
+  Component(auditLogger, "AI Audit Logger", "Persistence component", "Stores interaction records and disposition metadata")
+}
+
+Rel(api, requestHandler, "Enqueue AI job")
+Rel(requestHandler, policyGuard, "Check policy and quota")
+Rel(requestHandler, contextResolver, "Load document context")
+Rel(requestHandler, promptRegistry, "Load prompt template")
+Rel(requestHandler, providerAdapter, "Call provider adapter")
+Rel(providerAdapter, llm, "Generate completion")
+Rel(requestHandler, suggestionComposer, "Build reviewable suggestion")
+Rel(suggestionComposer, auditLogger, "Persist result metadata")
+Rel(auditLogger, db, "Write interaction metadata")
+Rel(contextResolver, db, "Read metadata and document content")
+Rel(requestHandler, eventPublisher, "Publish job status")
+Rel(eventPublisher, sync, "Push status to collaborators")
+@enduml

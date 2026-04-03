@@ -1,0 +1,29 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+' uncomment the following line and comment the first to use locally
+' !include C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Collaborative Document Editor with AI - Container Diagram
+Person(editor, "Collaborator", "Uses the web editor and AI assistant")
+Person(admin, "Organization Admin", "Manages sharing, roles, and AI policy")
+System_Ext(idp, "Identity Provider", "OIDC / SSO provider")
+System_Ext(llm, "Third-Party LLM Provider", "Hosted LLM API")
+
+System_Boundary(prod, "Collaborative Document Editor Platform") {
+  Container(web, "AC-01 Frontend Editor UI", "React + TipTap/ProseMirror + Yjs", "Rich-text editing, local state, AI panel, offline/reconnect")
+  Container(api, "AC-03 Backend API Service", "Python FastAPI REST API", "Document CRUD, sharing, versioning, export, audit")
+  Container(sync, "AC-02 Collaboration / Real-Time Sync", "Yjs over FastAPI WebSocket", "Merges updates via CRDT, awareness, presence broadcast")
+  Container(ai, "AC-07 AI Orchestration Service", "Merged into FastAPI backend", "Prompts, AI policy/quota, multi-provider LLM calls, suggestion storage")
+  ContainerDb(db, "Platform Database", "SQLite (aiosqlite)", "Users, workspaces, doc metadata + content, shares, versions, AI metadata, audit logs")
+}
+
+Rel(editor, web, "Edits, reviews suggestions", "HTTPS")
+Rel(admin, web, "Policy and permissions", "HTTPS")
+Rel(web, api, "Documents, versions/shares, AI jobs", "HTTPS")
+Rel(web, sync, "Live session, presence updates", "WebSocket")
+Rel(api, db, "Metadata, content, and audit", "SQL via SQLAlchemy async")
+Rel(sync, db, "Yjs CRDT state persistence", "SQL")
+Rel(ai, llm, "Prompts and completions", "HTTPS via httpx")
+Rel(ai, db, "AI interaction and suggestion metadata", "SQL")

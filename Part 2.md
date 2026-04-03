@@ -59,9 +59,14 @@ At a high level, the system separates the editing path from the AI path. Real-ti
 
 ### Level 1 - System Context Diagram
 
-```mermaid
-%%{init: {'c4': {'c4ShapeMargin': 95, 'diagramMarginY': 30}}}%%
-C4Context
+```puml
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+' uncomment the following line and comment the first to use locally
+' !include C4_Context.puml
+
+LAYOUT_WITH_LEGEND()
+
 title Collaborative Document Editor with AI - System Context
 Person(editor, "Collaborator", "Creates, edits, comments on, shares, and exports documents")
 Person(admin, "Organization Admin", "Manages members, policies, and role-based AI availability")
@@ -78,6 +83,7 @@ Rel(editorPlatform, idp, "Authenticates users, resolves identity")
 Rel(editor, editorPlatform, "Edits, collaborates, requests AI help")
 Rel(admin, editorPlatform, "Configures access and AI policies")
 Rel(reviewer, editorPlatform, "Reviews version and AI logs")
+@enduml
 ```
 
 ![Context Diagram](https://www.plantuml.com/plantuml/png/ZPDFRziy3CRl_XHyStbJ86akE-tKh0ss0kaQD2s6dGB5Ocq2-kDHTD9is7SV5TiBiXR3Rh94_Xxo8NsLnB2qtXN_KIXTQn5gaIQzdytOx2yhahhTjWcvZ44mo6KP_Qnn9kISQHBhQ3kxVZTTvQkdk-NCcoJ8UhMvpXalSjba-l_G1atrYW2f4PwZSt5FeG970S442sVFn4bF4LGQN2oDSmTb_AxnJtond7-zVthSVBbz_BHPBZukFj-CBuf2I9m6gvRPHZP2EuIRMBP7dOKbYGnxRH7cjp25zI49UkZ1nGevnJ36OzW4HYTCv57-PZI2QG8v8as6-XF4C85K6yvlkJ5yQIBhlUsLq-XYW1lhAIZhdYiJwBiHYW7c-J8ht9bWAapWqM-HbTP4HoKDN8uEfrkJqERwpSwGraUEv70IODmHxZ7N_uZ6mnADXPdsw1j79fG83tr45kpE2NQQd2kfAKdaWwfr4gKwg7ZOryW83R8d4RGgrtctMRp8c6oZg5kBGNBiYkEERCUVjrBdwp8RbsVBwSZsvW1D5mVhzVqvppcVgw-9xNHbM97BvTqPLiybfgJ8RMo3xVnGdc-aupDAoo51XG7PY0Qajb9dizrv6eFSXvnk-33MPAlWls-ExhmyH_QZ2_XH07ICVb-6DuNyq_frxXit5V88vLaAdYA7oL2ekXtBXtuyKvCIfTpSdadqGHlxMHGFw5xLr5cwnc3JoIeruirWdUVRevi0Oufkfz_KJ_iCCO5NNYo6NsNe3u-KRoqcEPPIesiwoF1llE5dUAQgLMqmPPxxi9x3tz7ddrR_7F5wpmU0YrLEli9WM-z-0G00)
@@ -87,9 +93,14 @@ This level shows the platform as a single system. The important architectural ob
 
 ### Level 2 - Container Diagram
 
-```mermaid
-%%{init: {'c4': {'diagramMarginX': 80, 'diagramMarginY': 55, 'c4ShapeMargin': 180, 'boxMargin': 40}}}%%
-C4Container
+```puml
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+' uncomment the following line and comment the first to use locally
+' !include C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
 title Collaborative Document Editor with AI - Container Diagram
 Person(editor, "Collaborator", "Uses the web editor and AI assistant")
 Person(admin, "Organization Admin", "Manages sharing, roles, and AI policy")
@@ -104,8 +115,6 @@ System_Boundary(prod, "Collaborative Document Editor Platform") {
   ContainerDb(db, "Platform Database", "SQLite (aiosqlite)", "Users, workspaces, doc metadata + content, shares, versions, AI metadata, audit logs")
 }
 
-UpdateLayoutConfig($c4ShapeInRow="4", $c4BoundaryInRow="1")
-
 Rel(editor, web, "Edits, reviews suggestions", "HTTPS")
 Rel(admin, web, "Policy and permissions", "HTTPS")
 Rel(web, api, "Documents, versions/shares, AI jobs", "HTTPS")
@@ -114,6 +123,7 @@ Rel(api, db, "Metadata, content, and audit", "SQL via SQLAlchemy async")
 Rel(sync, db, "Yjs CRDT state persistence", "SQL")
 Rel(ai, llm, "Prompts and completions", "HTTPS via httpx")
 Rel(ai, db, "AI interaction and suggestion metadata", "SQL")
+@enduml
 ```
 ![Container Diagram](https://www.plantuml.com/plantuml/png/VLLTZ-8s57tdLzpEInaL9lseLAbFomBRHO92Xw3LFesS-0vurx6plZSmjEf_xxL9mj2k-aGmztpu-3Yy8LQ1cyeElZ6kj8r6E33Nz6kM1NLws1i-D4L364hl61q_bBxAQgjSn8o9jJL5Dlrvl8bBkzKognGn1bbwcWf26OVXeOxytqBZ15m92V01uTbRwq_6xS7A42YduUPd4qYUF8WuM5ygQy_2qRji1V25B_I3vUJZUfS_VLZaxv-Myz_cly-6zuC16xOoB5ggy46nEIBCVDaadRasx0ESP9CmMS0OUiimCseVL3NOO23lXfWcHt1tPVBXJhxl22dvFM41bwcq5Q5JH8POOhcxxsYKhemJr3hibJD_YXtlO18N8zTAERKNEZge8BcC87YBDEhuQczDUHQoxPaOgwVv2m-DhWMuqEZOy1asmH-DnkHilPXD8OFjTWrrktoBjRQIiVnWWXvlL13uShcweNZlPLYdvSbc8UWE_jOtJgjm7Wgpbi7_prUwmSy-L7VtyDS0hY4F9JC1JwRZxt-0To4LJ7UWtI8wU4HLCdm7kQbpLMTYZd1bGl115Zz-eZHZoiCu5Y7bdu9BVG5YnJXAqIc7TWJ--JbsBGieRNPOoidS-56rQVty16zL-JdQaOt35iFHb1Z5DcS-U0Vl577yvN6-pMKaUUstFNtSpKRNKpnY8EDTUiQNsWUM8ssq-RSwdLtPol_ukh4Ybu44OSUvgH2sCXRbPFVWXRltyW6BhHVJdBg48LQfgRLY-JmQ9RPckIYVL4279Bsg0nAw4g48NkbIqN_owEBu9OQu3kK1YLjBRIQzbWRZsFTcYajyARBWgvf5h-zmzgNnh4PGDPRDk6jdwbcyvp9ApLxi9o5YIM6FjzPcnL37xdJLWfbYLIXAVhP_B0qZY7rFNwmythStDGZpoOVFLAiIvLdx4YfafGKiVMfVSPUZG-fFBbdl1zl30-lt9AR-7WmUqVOlY4kbOuS55V1ey4IlTaFfMkNvPYjGmRLlX1QsIUca-rvZg0pHro1fDbMrhzmhhrbdNYn_yiNNqMtLbl6s4YQPQntQqYHatwaMdMHJygikZZwsv3jbqnv2QfryJgmKfv9zHTcMA3wsJ5BarCtBVOqx9qCSdRGydRP8MrjT6zNzPzGMRxDDml5lxAM7jbeIYX6tGPKHaGYkXzCVyLNtZNIugUm_)
 
@@ -132,9 +142,14 @@ The container split is intentional. AC-01 is optimized for responsive editing an
 
 ### Level 3 - Component Diagram for AC-07 AI Orchestration Service
 
-```mermaid
-%%{init: {'c4': {'diagramMarginX': 90, 'diagramMarginY': 70, 'c4ShapeMargin': 180, 'boxMargin': 45, 'c4ShapePadding': 18}}}%%
-C4Component
+```puml
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+' uncomment the following line and comment the first to use locally
+' !include C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
 title AC-07 AI Orchestration Service - Component Diagram
 Container(api, "AC-03 Backend API Service", "Python FastAPI", "Creates AI jobs and reads suggestions")
 System_Ext(llm, "LLM Providers", "OpenAI, Claude, or Ollama")
@@ -152,8 +167,6 @@ Container_Boundary(ai, "AC-07 AI Orchestration Service") {
   Component(auditLogger, "AI Audit Logger", "Persistence component", "Stores interaction records and disposition metadata")
 }
 
-UpdateLayoutConfig($c4ShapeInRow="4", $c4BoundaryInRow="1")
-
 Rel(api, requestHandler, "Enqueue AI job")
 Rel(requestHandler, policyGuard, "Check policy and quota")
 Rel(requestHandler, contextResolver, "Load document context")
@@ -166,6 +179,7 @@ Rel(auditLogger, db, "Write interaction metadata")
 Rel(contextResolver, db, "Read metadata and document content")
 Rel(requestHandler, eventPublisher, "Publish job status")
 Rel(eventPublisher, sync, "Push status to collaborators")
+@enduml
 ```
 
 ![Component Diagram](https://www.plantuml.com/plantuml/png/TLLFRoEt3xtxK_2NmwyEuAoBja2BdjRhfBifl4qspZReAU1eQ5jTZJGHgIH6qUzUITPCd75y6pp-uHFvo7dFWbv2OqR_qrQPK1DiH5h-TJhr-FHkhMKJgi3abRD2LjufrqnRWpR5dB7KHbVJ-Kzdrmdw-danRP25V8JkvwvfdKqnRSh_7GGRWvi8W6m8LiuOzwJj6eos16XhU6NMdkENWy04nYaqPXjpz2nJWKJfkQGVBMP_NNszlR-xlFrqlxZuUF77-VXqD18jXc0sF_l-PvXTmfLN6sBnADfPM99_r8hW37gkSAvnxR4PfUIeBVanjde29od5Z_01rJUAJ6VNbrtqIJHURsKJy_s6BD6IaBad5E9KyszNSNvUX6e63kirSQhF9wUZvPQ5clkBPnaRqyJ0nU8pN7ltg6lod39TjMHdbnEO6mmrJS1vk3866upHFSdpQbnNYOX1MJdVm3aALiYPtVBBGWl16BNZ1nC_JpDdPxJIn9F4KLiXZogpcknHX8O4QvHNnSQyjQgqv8VOEcEmSgMbKxWXD6UtkY5OHhVzBfNsm1rLInVxA9b6g8pc3N7g4x2W14vZLtrQvrEZNihVVt31rkYtO-m6Stos9wVmpmXUvZjkqxEt7mFwkcl25luFNu8JX0mdLkUkYRM0NyZFDwI-CUp29q0sAol9TPA7-n1Sxj9-BKyFWLW-HRiXdxXUmk-kWWAaj5y21GBbB8U6F4m1spPMo6_OB_yd6brdHVLoKixvMjiCqZEfa6863DHkHMw8dNdC5ChIG0Uz_Tg5or8bGoepANcAZ1yr3xJngiC-ViQIQytYjwd96O1RQbg3Gj2Pyhl8frnKWtHcXOB6hPEra6JOvUnzTWreN4q6c4IqNVE01JsIbKvSVfSh684UIlalaXEq7NHKZpbPacK-JKpCXwrkozBEQco5V57cBqcPtJv3iQKwFOOLIrczX7_6bg48fpiR74imzVNJYUYg3KYyR6x6EFDOzY1qQ9wwNgrIWPGhWcYW2jhKE-E7zCbvrlI4bQ7zkvMZMD3GL3cxCbe9h0mUp013hMNXObmH_om1a93IX3Hz5hAAG7LX-MI9yyJxPmayAUVhNUrQSsIiXnVgtz7eXipkO1_iteMDGA1oaQDtSXrwxL-7ilC5Urdo8w63LIjB1BLJ8Ls9pduaUhWqENWe--En0-NDqPWU1jpX9Vh0U_VV-KYMFCfk3ePIQu-KEzHOfvUtvLBIl1NsMY153U3pflQ3BV6lVFFFxivheNsD34C68obXDuHrxmbeXpEonsPqS5BAzzwbA953p_J3pFxH-VWlxZtPEZJcFm00)
