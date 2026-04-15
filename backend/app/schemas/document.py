@@ -81,6 +81,34 @@ class ShareResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ShareLinkCreate(BaseModel):
+    role: str  # "viewer" or "editor"
+    expires_in_hours: int | None = None  # None = no expiry
+    allow_ai: bool = True
+
+
+class ShareLinkCreateResponse(BaseModel):
+    """Response when creating a share link.
+
+    `token` is the raw, single-use-display token — returned exactly once,
+    then only the sha256 hash remains on the server.
+    """
+
+    share_id: str
+    token: str
+    role: str
+    expires_at: datetime | None
+
+
+class ShareLinkRedeemRequest(BaseModel):
+    token: str
+
+
+class ShareLinkRedeemResponse(BaseModel):
+    document_id: str
+    role: str
+
+
 class AuditEventResponse(BaseModel):
     audit_event_id: str
     workspace_id: str

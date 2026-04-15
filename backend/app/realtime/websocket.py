@@ -5,13 +5,26 @@ Clients sync via the standard y-protocols sync/awareness protocol.
 The server intercepts Yjs updates to maintain state, and provides full
 document state to newly connecting clients.
 
-When all clients disconnect, the server persists the Yjs binary state
-to the database.
+Lifecycle additions vs. the initial relay implementation:
+- Server tracks `user_id` per connection and emits a JSON `presence_leave`
+  control frame when a client disconnects, so peers can prune their
+  awareness state without waiting for the Yjs heartbeat to expire.
+- `receive()` is wrapped in an asyncio.wait_for so idle connections drop
+  after WS_IDLE_TIMEOUT_SECONDS instead of hanging indefinitely.
+- Close codes are explicit (4401 auth, 4403 forbidden, 1000 normal) so
+  the client can distinguish reconnect-worthy failures from terminal ones.
+- Viewer-role users that send an edit frame receive a JSON `error` frame
+  with code "READ_ONLY" instead of being silently dropped.
+- Yjs state is persisted periodically (every WS_PERSIST_INTERVAL_UPDATES
+  applied updates) in addition to the existing "flush on room empty", so
+  edits survive a server crash mid-session.
 """
 
+import asyncio
+import json
 import logging
-import struct
 import uuid
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
@@ -36,6 +49,11 @@ MSG_AWARENESS = 1
 SYNC_STEP1 = 0
 SYNC_STEP2 = 1
 SYNC_UPDATE = 2
+
+# ── explicit close codes ─────────────────────────────────────────────────────
+CLOSE_AUTH_REQUIRED = 4401
+CLOSE_FORBIDDEN = 4403
+CLOSE_INTERNAL_ERROR = 1011
 
 
 # ── lib0 varint helpers (compatible with y-protocols encoding) ───────────────
@@ -75,20 +93,33 @@ def _write_varuint8array(data: bytes) -> bytes:
     return _write_varuint(len(data)) + data
 
 
-# ── Room management ──────────────────────────────────────────────────────────
+# ── Connection / Room ────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Connection:
+    """A single client attached to a Room.
+
+    Frozen so the dict slot is swapped wholesale rather than mutated — keeps
+    with the project's immutability preference.
+    """
+
+    websocket: WebSocket
+    user_id: str
+
 
 class Room:
     """Holds the authoritative pycrdt.Doc and connected clients for one document."""
 
-    __slots__ = ("document_id", "ydoc", "connections", "_loaded")
+    __slots__ = ("document_id", "ydoc", "connections", "_loaded", "_updates_since_flush")
 
     def __init__(self, document_id: str) -> None:
         self.document_id = document_id
         self.ydoc = pycrdt.Doc()
         # Pre-register the prosemirror XmlFragment so pycrdt knows the type
         self.ydoc["prosemirror"] = pycrdt.XmlFragment()
-        self.connections: dict[str, WebSocket] = {}
+        self.connections: dict[str, Connection] = {}
         self._loaded = False
+        self._updates_since_flush = 0
 
     async def load_from_db(self, db: AsyncSession) -> None:
         """Load saved Yjs state from database, or initialize empty."""
@@ -117,17 +148,16 @@ class Room:
             if doc is not None:
                 doc.yjs_state = state
                 await db.commit()
+        self._updates_since_flush = 0
 
     def encode_sync_step1(self) -> bytes:
         """Create a SyncStep1 message (state vector) to send to a new client."""
         state_vector = bytes(self.ydoc.get_state())
-        # Format: [MSG_SYNC][SYNC_STEP1][varuint8array(state_vector)]
         return bytes([MSG_SYNC, SYNC_STEP1]) + _write_varuint8array(state_vector)
 
     def encode_sync_step2(self) -> bytes:
         """Create a SyncStep2 message (full doc update) to send to a new client."""
         update = bytes(self.ydoc.get_update())
-        # Format: [MSG_SYNC][SYNC_STEP2][varuint8array(update)]
         return bytes([MSG_SYNC, SYNC_STEP2]) + _write_varuint8array(update)
 
 
@@ -144,27 +174,59 @@ def _get_or_create_room(document_id: str) -> Room:
 # ── Auth helper ──────────────────────────────────────────────────────────────
 
 def _verify_token(token: str) -> str | None:
-    """Return user_id if token is valid, else None."""
+    """Return user_id if token is a valid *access* token, else None.
+
+    Refresh tokens carry type="refresh" and are rejected here so they cannot
+    be used to join a WebSocket session.
+    """
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        return payload.get("sub")
     except JWTError:
         return None
+    # Tokens issued before the type claim existed are treated as access tokens.
+    token_type = payload.get("type", "access")
+    if token_type != "access":
+        return None
+    return payload.get("sub")
 
 
-# ── Broadcast helper ─────────────────────────────────────────────────────────
+# ── Broadcast helpers ────────────────────────────────────────────────────────
 
-async def _broadcast(room: Room, sender_id: str, data: bytes) -> None:
-    """Send binary message to all connections in the room except the sender."""
+async def _broadcast_bytes(room: Room, sender_id: str, data: bytes) -> None:
+    """Send binary message to every connection except `sender_id`. Clean up
+    connections that error out mid-send."""
     dead: list[str] = []
-    for conn_id, ws in room.connections.items():
-        if conn_id != sender_id:
-            try:
-                await ws.send_bytes(data)
-            except Exception:
-                dead.append(conn_id)
+    for conn_id, conn in room.connections.items():
+        if conn_id == sender_id:
+            continue
+        try:
+            await conn.websocket.send_bytes(data)
+        except Exception:
+            dead.append(conn_id)
     for conn_id in dead:
         room.connections.pop(conn_id, None)
+
+
+async def _broadcast_text(room: Room, sender_id: str | None, payload: dict) -> None:
+    """Send a JSON control frame to every connection (optionally excluding sender)."""
+    serialized = json.dumps(payload)
+    dead: list[str] = []
+    for conn_id, conn in room.connections.items():
+        if sender_id is not None and conn_id == sender_id:
+            continue
+        try:
+            await conn.websocket.send_text(serialized)
+        except Exception:
+            dead.append(conn_id)
+    for conn_id in dead:
+        room.connections.pop(conn_id, None)
+
+
+async def _send_text_safe(websocket: WebSocket, payload: dict) -> None:
+    try:
+        await websocket.send_text(json.dumps(payload))
+    except Exception:
+        pass
 
 
 # ── WebSocket endpoint ───────────────────────────────────────────────────────
@@ -179,12 +241,12 @@ async def document_websocket(
     # ── Auth ──
     user_id = _verify_token(token)
     if user_id is None:
-        await websocket.close(code=4001, reason="Authentication required")
+        await websocket.close(code=CLOSE_AUTH_REQUIRED, reason="Authentication required")
         return
 
     has_access = await check_document_access_by_user_id(db, document_id, user_id, required_role="viewer")
     if not has_access:
-        await websocket.close(code=4003, reason="Access denied")
+        await websocket.close(code=CLOSE_FORBIDDEN, reason="Access denied")
         return
     can_edit = await check_document_access_by_user_id(db, document_id, user_id, required_role="editor")
 
@@ -194,11 +256,9 @@ async def document_websocket(
     # ── Join room ──
     room = _get_or_create_room(document_id)
     await room.load_from_db(db)
-    room.connections[connection_id] = websocket
+    room.connections[connection_id] = Connection(websocket=websocket, user_id=user_id)
 
     # ── Send server state to the new client ──
-    # Send SyncStep1 so the client responds with its state (if any)
-    # Then send SyncStep2 with the full server doc state
     try:
         await websocket.send_bytes(room.encode_sync_step1())
         await websocket.send_bytes(room.encode_sync_step2())
@@ -206,16 +266,28 @@ async def document_websocket(
         room.connections.pop(connection_id, None)
         return
 
+    idle_timeout = settings.WS_IDLE_TIMEOUT_SECONDS
+    persist_threshold = settings.WS_PERSIST_INTERVAL_UPDATES
+
     # ── Message loop ──
     try:
         while True:
-            message = await websocket.receive()
+            try:
+                message = await asyncio.wait_for(
+                    websocket.receive(), timeout=idle_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.debug("Idle timeout for connection %s", connection_id)
+                await websocket.close(code=1000, reason="Idle timeout")
+                break
 
             if message.get("type") == "websocket.disconnect":
                 break
 
             raw = message.get("bytes")
             if raw is None:
+                # Text frames from clients (ping/control) — ignore; only the
+                # server emits text frames today.
                 continue
             if len(raw) < 2:
                 continue
@@ -226,8 +298,6 @@ async def document_websocket(
                 sync_type = raw[1]
 
                 if sync_type == SYNC_STEP1:
-                    # Client sent SyncStep1 (state vector).
-                    # Reply with SyncStep2 (diff from their state to ours).
                     try:
                         client_sv, _ = _read_varuint8array(raw, 2)
                         diff = bytes(room.ydoc.get_update(client_sv)) if client_sv else bytes(room.ydoc.get_update())
@@ -237,26 +307,33 @@ async def document_websocket(
                     await websocket.send_bytes(reply)
 
                 elif sync_type == SYNC_STEP2 or sync_type == SYNC_UPDATE:
-                    # Client sent an update. Apply to server doc + broadcast.
                     if not can_edit:
-                        logger.debug(
-                            "Ignoring Yjs update from read-only user %s for document %s",
-                            user_id,
-                            document_id,
-                        )
+                        await _send_text_safe(websocket, {
+                            "type": "error",
+                            "code": "READ_ONLY",
+                            "detail": "Viewer role cannot send document updates",
+                        })
                         continue
                     try:
                         update_data, _ = _read_varuint8array(raw, 2)
                         if update_data:
                             room.ydoc.apply_update(update_data)
+                            room._updates_since_flush += 1
                     except Exception:
                         logger.debug("Failed to apply update from client", exc_info=True)
-                    # Broadcast the original message to other clients
-                    await _broadcast(room, connection_id, raw)
+                    await _broadcast_bytes(room, connection_id, raw)
+
+                    # Periodic flush so crashes don't discard in-flight edits
+                    if room._updates_since_flush >= persist_threshold:
+                        try:
+                            await room.persist_to_db()
+                        except Exception:
+                            logger.exception(
+                                "Failed periodic persist for %s", document_id
+                            )
 
             elif msg_type == MSG_AWARENESS:
-                # Relay awareness to all other clients
-                await _broadcast(room, connection_id, raw)
+                await _broadcast_bytes(room, connection_id, raw)
 
     except (WebSocketDisconnect, RuntimeError):
         pass
@@ -264,7 +341,15 @@ async def document_websocket(
         logger.exception("WebSocket error for document %s", document_id)
     finally:
         # ── Leave room ──
-        room.connections.pop(connection_id, None)
+        leaving = room.connections.pop(connection_id, None)
+
+        # Let peers prune awareness for this user immediately.
+        if leaving is not None and room.connections:
+            await _broadcast_text(room, None, {
+                "type": "presence_leave",
+                "user_id": leaving.user_id,
+                "connection_id": connection_id,
+            })
 
         # If room is empty, persist and clean up
         if not room.connections:
