@@ -33,6 +33,15 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token payload",
             )
+        # Reject refresh tokens presented as access tokens. Tokens issued before
+        # the type claim was introduced have no "type" and are treated as access
+        # tokens (backwards compat for already-handed-out sessions).
+        token_type = payload.get("type", "access")
+        if token_type != "access":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Wrong token type",
+            )
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
