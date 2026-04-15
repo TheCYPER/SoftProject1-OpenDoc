@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
     ALGORITHM: str = "HS256"
 
+    # WebSocket — lifecycle tuning
+    WS_IDLE_TIMEOUT_SECONDS: int = 60  # close a silent client after this many seconds
+    WS_PERSIST_INTERVAL_UPDATES: int = 50  # flush yjs_state to DB every N applied updates
+
     # AI - default provider when user doesn't specify
     AI_DEFAULT_PROVIDER: str = "ollama"  # openai | claude | ollama
 
