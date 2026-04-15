@@ -14,6 +14,27 @@ from app.models.document import Document
 from app.models.user import User
 from app.schemas.ai import AIJobApply, AIJobCreate, AIJobResponse, AISuggestionResponse
 from app.services.ai.ai_service import run_ai_job
+from app.services.permissions import check_document_access
+
+
+async def _load_interaction_with_access(
+    db: AsyncSession,
+    job_id: str,
+    user: User,
+    required_role: str,
+) -> AIInteraction:
+    """Fetch an AIInteraction and ensure `user` has the role on its document.
+
+    Raises 404 if the job does not exist, 403 if the caller lacks access.
+    """
+    result = await db.execute(
+        select(AIInteraction).where(AIInteraction.interaction_id == job_id)
+    )
+    interaction = result.scalar_one_or_none()
+    if interaction is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI job not found")
+    await check_document_access(db, interaction.document_id, user, required_role=required_role)
+    return interaction
 
 router = APIRouter(tags=["ai"])
 limiter = Limiter(key_func=get_remote_address)
@@ -61,12 +82,9 @@ async def create_ai_job(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    doc_result = await db.execute(
-        select(Document).where(Document.document_id == document_id)
+    doc = await check_document_access(
+        db, document_id, current_user, required_role="editor"
     )
-    doc = doc_result.scalar_one_or_none()
-    if doc is None or doc.status == "deleted":
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     # Quota check
     if not await _check_quota(db, current_user.user_id):
@@ -166,12 +184,9 @@ async def get_ai_job(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(AIInteraction).where(AIInteraction.interaction_id == job_id)
+    interaction = await _load_interaction_with_access(
+        db, job_id, current_user, required_role="viewer"
     )
-    interaction = result.scalar_one_or_none()
-    if interaction is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI job not found")
     return AIJobResponse(
         job_id=interaction.interaction_id,
         status=interaction.status,
@@ -185,6 +200,7 @@ async def get_suggestion(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    await _load_interaction_with_access(db, job_id, current_user, required_role="viewer")
     result = await db.execute(
         select(AISuggestion)
         .join(AIInteraction)
@@ -203,19 +219,15 @@ async def apply_suggestion(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    interaction = await _load_interaction_with_access(
+        db, job_id, current_user, required_role="editor"
+    )
     result = await db.execute(
-        select(AISuggestion)
-        .join(AIInteraction)
-        .where(AIInteraction.interaction_id == job_id)
+        select(AISuggestion).where(AISuggestion.interaction_id == interaction.interaction_id)
     )
     suggestion = result.scalar_one_or_none()
     if suggestion is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion not found")
-
-    interaction_result = await db.execute(
-        select(AIInteraction).where(AIInteraction.interaction_id == job_id)
-    )
-    interaction = interaction_result.scalar_one()
 
     doc_result = await db.execute(
         select(Document).where(Document.document_id == interaction.document_id)
@@ -251,19 +263,15 @@ async def reject_suggestion(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    interaction = await _load_interaction_with_access(
+        db, job_id, current_user, required_role="editor"
+    )
     result = await db.execute(
-        select(AISuggestion)
-        .join(AIInteraction)
-        .where(AIInteraction.interaction_id == job_id)
+        select(AISuggestion).where(AISuggestion.interaction_id == interaction.interaction_id)
     )
     suggestion = result.scalar_one_or_none()
     if suggestion is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion not found")
-
-    interaction_result = await db.execute(
-        select(AIInteraction).where(AIInteraction.interaction_id == job_id)
-    )
-    interaction = interaction_result.scalar_one()
 
     doc_result = await db.execute(
         select(Document).where(Document.document_id == interaction.document_id)
