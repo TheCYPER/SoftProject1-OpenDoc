@@ -78,19 +78,44 @@ npm run dev
 
 Open http://localhost:5173 in your browser.
 
+## Make commands
+
+<!-- AUTO-GENERATED from Makefile — run `make help` for the live version -->
+
+| Command | Description |
+|---------|-------------|
+| `make install` | Install backend venv + frontend node_modules |
+| `make migrate` | Run `alembic upgrade head` |
+| `make backend` | Start the backend only (foreground, port 8000) |
+| `make frontend` | Start the frontend only (foreground, port 5173) |
+| `make dev` | Start backend + frontend together (Ctrl-C stops both) |
+| `make test` | Run backend pytest suite |
+| `make test-cov` | Run backend tests with coverage summary |
+| `make docker` | `docker-compose up --build` |
+| `make docker-down` | `docker-compose down` |
+| `make clean` | Remove caches, `.pytest_cache`, frontend `dist/` |
+
+<!-- END AUTO-GENERATED -->
+
 ## Environment Variables
 
-Copy `.env.example` to `.env` and adjust as needed:
+Copy `.env.example` to `.env` and adjust as needed.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | `sqlite+aiosqlite:///./collab_editor.db` | Database connection string |
-| `SECRET_KEY` | `change-me-in-production` | JWT signing secret |
-| `AI_DEFAULT_PROVIDER` | `ollama` | Default AI provider (`ollama`, `openai`, or `claude`) |
-| `OLLAMA_BASE_URL` | `http://ollama:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `qwen2.5:8b` | Ollama model name |
-| `OPENAI_API_KEY` | *(empty)* | OpenAI API key (optional) |
-| `ANTHROPIC_API_KEY` | *(empty)* | Anthropic API key (optional) |
+<!-- AUTO-GENERATED from .env.example + backend/app/config.py -->
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | No | `sqlite+aiosqlite:///./collab_editor.db` | Async SQLAlchemy connection string |
+| `SECRET_KEY` | **Yes in prod** | `change-me-in-production` | JWT signing secret — override in any non-dev deployment |
+| `AI_DEFAULT_PROVIDER` | No | `ollama` | Fallback AI provider when a request doesn't specify one (`ollama`, `openai`, or `claude`) |
+| `OPENAI_API_KEY` | No | *(empty)* | OpenAI API key; caller can also pass per-request |
+| `OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | OpenAI endpoint (override for Azure OpenAI / proxies) |
+| `ANTHROPIC_API_KEY` | No | *(empty)* | Anthropic API key; caller can also pass per-request |
+| `ANTHROPIC_BASE_URL` | No | `https://api.anthropic.com` | Anthropic endpoint |
+| `OLLAMA_BASE_URL` | No | `http://ollama:11434` | Ollama server URL (compose default; use `http://localhost:11434` for host ollama) |
+| `OLLAMA_MODEL` | No | `qwen2.5:8b` | Ollama model name pulled at first use |
+
+<!-- END AUTO-GENERATED -->
 
 ## Running Tests
 
