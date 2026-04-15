@@ -6,10 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
 from app.models.audit_event import AuditEvent
-from app.models.document import Document
 from app.models.document_version import DocumentVersion
 from app.models.user import User
 from app.schemas.document import VersionResponse
+from app.services.permissions import check_document_access
 
 router = APIRouter(tags=["versions"])
 
@@ -25,6 +25,7 @@ async def list_versions(
     current_user: User = Depends(get_current_user),
 ):
     """Viewer role required (see RBAC matrix in README)."""
+    await check_document_access(db, document_id, current_user, required_role="viewer")
     result = await db.execute(
         select(DocumentVersion)
         .where(DocumentVersion.document_id == document_id)
@@ -47,6 +48,10 @@ async def restore_version(
 ):
     """Editor role required. Creates a new DocumentVersion row with
     reason='restore' linked to the original via `restored_from_version_id`."""
+    doc = await check_document_access(
+        db, document_id, current_user, required_role="editor"
+    )
+
     result = await db.execute(
         select(DocumentVersion).where(
             DocumentVersion.version_id == version_id,
@@ -56,13 +61,6 @@ async def restore_version(
     old_version = result.scalar_one_or_none()
     if old_version is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
-
-    doc_result = await db.execute(
-        select(Document).where(Document.document_id == document_id)
-    )
-    doc = doc_result.scalar_one_or_none()
-    if doc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     new_revision = f"rev_{uuid.uuid4().hex[:8]}"
     new_version = DocumentVersion(

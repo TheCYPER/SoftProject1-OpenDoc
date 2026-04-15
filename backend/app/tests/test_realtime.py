@@ -76,7 +76,8 @@ def test_websocket_rejects_invalid_token():
             with client.websocket_connect("/ws/documents/any-doc-id?token=invalid"):
                 assert False, "Expected websocket authentication failure"
         except WebSocketDisconnect as exc:
-            assert exc.code == 4001
+            # 4401 — private auth-required code (mirrors HTTP 401)
+            assert exc.code == 4401
     app.dependency_overrides.clear()
 
 
@@ -90,7 +91,8 @@ def test_websocket_rejects_unauthorized_document():
             with client.websocket_connect(f"/ws/documents/{uuid.uuid4()}?token={token}"):
                 assert False, "Expected access denied"
         except WebSocketDisconnect as exc:
-            assert exc.code == 4003
+            # 4403 — private forbidden code (mirrors HTTP 403)
+            assert exc.code == 4403
     app.dependency_overrides.clear()
 
 
@@ -161,4 +163,99 @@ def test_same_user_can_open_multiple_connections():
                     ws1.send_bytes(update)
                     assert ws2.receive_bytes() == update
                     assert ws3.receive_bytes() == update
+    app.dependency_overrides.clear()
+
+
+def test_websocket_broadcasts_presence_leave_on_disconnect():
+    """When one client disconnects, peers receive a JSON presence_leave frame."""
+    import json as _json
+
+    app.dependency_overrides[get_db] = _override_get_db
+    with TestClient(app) as client:
+        token, doc_id = _setup_user_and_doc(client)
+        ws_router._rooms.clear()
+        with client.websocket_connect(f"/ws/documents/{doc_id}?token={token}") as ws_watcher:
+            _drain_initial_sync(ws_watcher)
+            with client.websocket_connect(f"/ws/documents/{doc_id}?token={token}") as ws_leaving:
+                _drain_initial_sync(ws_leaving)
+            # ws_leaving has closed; the watcher should get a presence_leave frame
+            text = ws_watcher.receive_text()
+            payload = _json.loads(text)
+            assert payload["type"] == "presence_leave"
+            assert "user_id" in payload
+            assert "connection_id" in payload
+    app.dependency_overrides.clear()
+
+
+def test_viewer_send_update_receives_read_only_error():
+    """A viewer who attempts to send a SYNC_UPDATE gets an error frame back."""
+    import json as _json
+
+    app.dependency_overrides[get_db] = _override_get_db
+    with TestClient(app) as client:
+        owner_token, doc_id = _setup_user_and_doc(client)
+        ws_router._rooms.clear()
+
+        # Register a second user (bob) and share as viewer
+        bob_email = f"viewer_{uuid.uuid4().hex[:6]}@example.com"
+        resp = client.post("/api/auth/register", json={
+            "email": bob_email,
+            "display_name": "Viewer Bob",
+            "password": "pw123",
+        })
+        assert resp.status_code == 201
+        resp = client.post("/api/auth/login", json={
+            "email": bob_email,
+            "password": "pw123",
+        })
+        bob_token = resp.json()["access_token"]
+
+        # Owner shares as viewer
+        resp = client.post(f"/api/documents/{doc_id}/shares", json={
+            "grantee_type": "USER",
+            "grantee_ref": bob_email,
+            "role": "viewer",
+            "allow_ai": False,
+        }, headers={"Authorization": f"Bearer {owner_token}"})
+        assert resp.status_code == 201
+
+        with client.websocket_connect(
+            f"/ws/documents/{doc_id}?token={bob_token}"
+        ) as ws:
+            _drain_initial_sync(ws)
+            # Attempt a SYNC_UPDATE as viewer
+            ws.send_bytes(bytes([MSG_SYNC, SYNC_UPDATE, 2, 0xAA, 0xBB]))
+            text = ws.receive_text()
+            payload = _json.loads(text)
+            assert payload["type"] == "error"
+            assert payload["code"] == "READ_ONLY"
+    app.dependency_overrides.clear()
+
+
+def test_websocket_rejects_refresh_token():
+    """A refresh-type token must not be accepted on the WebSocket."""
+    from datetime import datetime, timedelta, timezone
+
+    from jose import jwt
+
+    from app.config import settings
+
+    app.dependency_overrides[get_db] = _override_get_db
+    with TestClient(app) as client:
+        refresh_token = jwt.encode(
+            {
+                "sub": "does-not-matter",
+                "type": "refresh",
+                "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            },
+            settings.SECRET_KEY,
+            algorithm=settings.ALGORITHM,
+        )
+        try:
+            with client.websocket_connect(
+                f"/ws/documents/some-doc?token={refresh_token}"
+            ):
+                assert False, "Expected refresh token rejection"
+        except WebSocketDisconnect as exc:
+            assert exc.code == 4401
     app.dependency_overrides.clear()
