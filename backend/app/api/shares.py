@@ -12,12 +12,17 @@ from app.services.permissions import check_document_access
 router = APIRouter(tags=["shares"])
 
 
-@router.get("/api/documents/{document_id}/shares", response_model=list[ShareResponse])
+@router.get(
+    "/api/documents/{document_id}/shares",
+    response_model=list[ShareResponse],
+    summary="List all shares for a document (owner only)",
+)
 async def list_shares(
     document_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Owner role required. Returns USER and LINK grants alike."""
     await check_document_access(db, document_id, current_user, required_role="owner")
     result = await db.execute(
         select(DocumentShare).where(DocumentShare.document_id == document_id)
@@ -29,6 +34,7 @@ async def list_shares(
     "/api/documents/{document_id}/shares",
     response_model=ShareResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Grant a user access to a document (owner only)",
 )
 async def create_share(
     document_id: str,
@@ -36,6 +42,8 @@ async def create_share(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Creates a USER share keyed by email. Use the share-link endpoints for
+    link-based sharing (grantee_type=LINK)."""
     doc = await check_document_access(db, document_id, current_user, required_role="owner")
     share = DocumentShare(
         document_id=document_id,
@@ -66,6 +74,7 @@ async def create_share(
 @router.patch(
     "/api/documents/{document_id}/shares/{share_id}",
     response_model=ShareResponse,
+    summary="Update a share's role / expiry / AI flag (owner only)",
 )
 async def update_share(
     document_id: str,
@@ -74,6 +83,7 @@ async def update_share(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Any non-null field is applied. Changes recorded in `audit_events`."""
     doc = await check_document_access(db, document_id, current_user, required_role="owner")
     result = await db.execute(
         select(DocumentShare).where(
@@ -111,6 +121,7 @@ async def update_share(
 @router.delete(
     "/api/documents/{document_id}/shares/{share_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke a share (owner only)",
 )
 async def delete_share(
     document_id: str,
@@ -118,6 +129,7 @@ async def delete_share(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Hard-deletes the share row; the grantee immediately loses access."""
     doc = await check_document_access(db, document_id, current_user, required_role="owner")
     result = await db.execute(
         select(DocumentShare).where(

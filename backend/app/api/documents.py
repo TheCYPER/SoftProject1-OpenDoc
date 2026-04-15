@@ -23,12 +23,19 @@ from app.services.permissions import check_document_access
 router = APIRouter(tags=["documents"])
 
 
-@router.post("/api/documents", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/api/documents",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new document",
+    responses={401: {"description": "Not authenticated"}},
+)
 async def create_document(
     body: DocumentCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Create a document owned by the caller with an initial version snapshot."""
     initial_revision = f"rev_{uuid.uuid4().hex[:8]}"
     doc = Document(
         workspace_id=body.workspace_id,
@@ -53,12 +60,18 @@ async def create_document(
     return doc
 
 
-@router.get("/api/documents", response_model=list[DocumentListItem])
+@router.get(
+    "/api/documents",
+    response_model=list[DocumentListItem],
+    summary="List documents the caller can see",
+)
 async def list_documents(
     workspace_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Returns documents owned by the caller or shared with them (non-expired),
+    excluding soft-deleted documents. Optional `workspace_id` filter."""
     now = datetime.now(timezone.utc)
     accessible_via_share = (
         select(DocumentShare.document_id)
@@ -89,22 +102,34 @@ async def list_documents(
     return result.scalars().all()
 
 
-@router.get("/api/documents/{document_id}", response_model=DocumentResponse)
+@router.get(
+    "/api/documents/{document_id}",
+    response_model=DocumentResponse,
+    summary="Fetch a document",
+    responses={403: {"description": "Access denied"}, 404: {"description": "Not found"}},
+)
 async def get_document(
     document_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Requires viewer role. Response includes the caller's effective role."""
     return await check_document_access(db, document_id, current_user, required_role="viewer")
 
 
-@router.patch("/api/documents/{document_id}", response_model=DocumentResponse)
+@router.patch(
+    "/api/documents/{document_id}",
+    response_model=DocumentResponse,
+    summary="Update a document (title/content/status)",
+    responses={403: {"description": "Access denied"}, 404: {"description": "Not found"}},
+)
 async def update_document(
     document_id: str,
     body: DocumentUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Requires editor role. A content change also creates a new version snapshot."""
     doc = await check_document_access(db, document_id, current_user, required_role="editor")
 
     update_data = body.model_dump(exclude_unset=True)
@@ -130,25 +155,35 @@ async def update_document(
     return doc
 
 
-@router.delete("/api/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/api/documents/{document_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Soft-delete a document (owner only)",
+    responses={403: {"description": "Access denied"}, 404: {"description": "Not found"}},
+)
 async def delete_document(
     document_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Marks status='deleted'; rows remain in the DB for audit."""
     doc = await check_document_access(db, document_id, current_user, required_role="owner")
     doc.status = "deleted"
     await db.commit()
 
 
-@router.get("/api/documents/{document_id}/export", response_class=HTMLResponse)
+@router.get(
+    "/api/documents/{document_id}/export",
+    response_class=HTMLResponse,
+    summary="Export a document as HTML or plain text",
+)
 async def export_document(
     document_id: str,
     format: str = Query(default="html", pattern="^(html|txt)$"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Export document as HTML or plain text."""
+    """Renders the prosemirror-json content. `format=html` (default) or `txt`."""
     doc = await check_document_access(db, document_id, current_user, required_role="viewer")
     title = html.escape(doc.title)
     content = doc.content or {"type": "doc", "content": []}

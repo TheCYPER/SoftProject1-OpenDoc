@@ -17,12 +17,14 @@ router = APIRouter(tags=["versions"])
 @router.get(
     "/api/documents/{document_id}/versions",
     response_model=list[VersionResponse],
+    summary="List a document's version snapshots (newest first)",
 )
 async def list_versions(
     document_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Viewer role required (see RBAC matrix in README)."""
     result = await db.execute(
         select(DocumentVersion)
         .where(DocumentVersion.document_id == document_id)
@@ -35,6 +37,7 @@ async def list_versions(
     "/api/documents/{document_id}/versions/{version_id}/restore",
     response_model=VersionResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Restore a previous version as a new snapshot",
 )
 async def restore_version(
     document_id: str,
@@ -42,6 +45,8 @@ async def restore_version(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Editor role required. Creates a new DocumentVersion row with
+    reason='restore' linked to the original via `restored_from_version_id`."""
     result = await db.execute(
         select(DocumentVersion).where(
             DocumentVersion.version_id == version_id,
