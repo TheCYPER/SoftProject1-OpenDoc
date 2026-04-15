@@ -6,4 +6,27 @@ requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["app/tests"]
+
+[tool.coverage.run]
+source = ["app"]
+concurrency = ["thread", "greenlet"]
+omit = [
+    "app/tests/*",
+    "app/main.py",
+    "alembic/*",
+    # AI providers require live LLM backends; their wire-call paths are
+    # exercised via integration tests outside the unit suite.
+    "app/services/ai/providers/claude.py",
+    "app/services/ai/providers/ollama.py",
+    "app/services/ai/providers/openai.py",
+    "app/services/ai/ai_service.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
