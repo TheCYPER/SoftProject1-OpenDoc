@@ -14,6 +14,7 @@ router = APIRouter(tags=["audit"])
 @router.get(
     "/api/documents/{document_id}/audit",
     response_model=list[AuditEventResponse],
+    summary="Read a document's audit trail (owner only)",
 )
 async def get_audit_trail(
     document_id: str,

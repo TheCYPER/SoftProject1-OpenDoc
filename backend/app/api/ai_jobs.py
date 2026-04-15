@@ -73,6 +73,7 @@ async def _check_quota(db: AsyncSession, user_id: str) -> bool:
     "/api/documents/{document_id}/ai-jobs",
     response_model=AIJobResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    summary="Submit an AI job against a document's content",
 )
 @limiter.limit("20/minute")
 async def create_ai_job(
@@ -82,6 +83,11 @@ async def create_ai_job(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Accepts actions such as rewrite/summarize/translate/restructure.
+    Rate-limited to 20/min per client IP + 50 total jobs per user.
+    Returns 202 with a `job_id` even when the suggestion is produced inline."""
+    doc_result = await db.execute(
+        select(Document).where(Document.document_id == document_id)
     doc = await check_document_access(
         db, document_id, current_user, required_role="editor"
     )
@@ -178,12 +184,19 @@ async def create_ai_job(
     )
 
 
-@router.get("/api/ai-jobs/{job_id}", response_model=AIJobResponse)
+@router.get(
+    "/api/ai-jobs/{job_id}",
+    response_model=AIJobResponse,
+    summary="Fetch AI job status (running / ready / stale / failed)",
+)
 async def get_ai_job(
     job_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Viewer role on the job's document required."""
+    result = await db.execute(
+        select(AIInteraction).where(AIInteraction.interaction_id == job_id)
     interaction = await _load_interaction_with_access(
         db, job_id, current_user, required_role="viewer"
     )
@@ -194,12 +207,17 @@ async def get_ai_job(
     )
 
 
-@router.get("/api/ai-jobs/{job_id}/suggestion", response_model=AISuggestionResponse)
+@router.get(
+    "/api/ai-jobs/{job_id}/suggestion",
+    response_model=AISuggestionResponse,
+    summary="Get the suggestion produced by an AI job",
+)
 async def get_suggestion(
     job_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Viewer role required. Includes original vs suggested text for diff UIs."""
     await _load_interaction_with_access(db, job_id, current_user, required_role="viewer")
     result = await db.execute(
         select(AISuggestion)
@@ -212,7 +230,11 @@ async def get_suggestion(
     return suggestion
 
 
-@router.post("/api/ai-jobs/{job_id}/apply", status_code=status.HTTP_200_OK)
+@router.post(
+    "/api/ai-jobs/{job_id}/apply",
+    status_code=status.HTTP_200_OK,
+    summary="Accept an AI suggestion (full or partial)",
+)
 async def apply_suggestion(
     job_id: str,
     body: AIJobApply,
@@ -257,7 +279,11 @@ async def apply_suggestion(
     return {"status": "applied", "suggestion_id": str(suggestion.suggestion_id)}
 
 
-@router.post("/api/ai-jobs/{job_id}/reject", status_code=status.HTTP_200_OK)
+@router.post(
+    "/api/ai-jobs/{job_id}/reject",
+    status_code=status.HTTP_200_OK,
+    summary="Reject an AI suggestion",
+)
 async def reject_suggestion(
     job_id: str,
     db: AsyncSession = Depends(get_db),

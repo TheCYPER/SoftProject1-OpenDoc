@@ -51,6 +51,13 @@ def _create_token(user_id: str, token_type: str, expires_delta: timedelta) -> st
     )
 
 
+@router.post(
+    "/api/auth/register",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register a new user",
+    responses={409: {"description": "Email already registered"}},
+)
 def _create_access_token(user_id: str) -> str:
     return _create_token(
         user_id,
@@ -69,6 +76,7 @@ def _create_refresh_token(user_id: str) -> str:
 
 @router.post("/api/auth/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: UserCreate, db: AsyncSession = Depends(get_db)):
+    """Create a new account. Passwords are hashed with PBKDF2-SHA256 (260k rounds)."""
     result = await db.execute(select(User).where(User.email == body.email))
     if result.scalar_one_or_none() is not None:
         raise HTTPException(
@@ -87,8 +95,14 @@ async def register(body: UserCreate, db: AsyncSession = Depends(get_db)):
     return user
 
 
-@router.post("/api/auth/login", response_model=TokenResponse)
+@router.post(
+    "/api/auth/login",
+    response_model=TokenResponse,
+    summary="Log in and receive an access + refresh token pair",
+    responses={401: {"description": "Invalid credentials"}},
+)
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """Exchanges email+password for a 15-min access token and a 7-day refresh token."""
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
     if user is None or not _verify_password(body.password, user.hashed_password):
@@ -139,6 +153,12 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
     return TokenResponse(access_token=_create_access_token(user_id))
 
 
-@router.get("/api/me", response_model=UserResponse)
+@router.get(
+    "/api/me",
+    response_model=UserResponse,
+    summary="Return the currently authenticated user",
+    responses={401: {"description": "Not authenticated or wrong token type"}},
+)
 async def get_me(current_user: User = Depends(get_current_user)):
+    """Access tokens only — refresh tokens are rejected by the dependency."""
     return current_user

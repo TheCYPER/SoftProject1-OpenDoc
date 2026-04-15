@@ -31,6 +31,7 @@ class WorkspaceResponse(BaseModel):
 @router.patch(
     "/api/workspaces/{workspace_id}/ai-policy",
     response_model=WorkspaceResponse,
+    summary="Update workspace AI policy (owner/admin only)",
 )
 async def update_ai_policy(
     workspace_id: str,
