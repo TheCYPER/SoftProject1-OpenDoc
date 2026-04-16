@@ -3,7 +3,7 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import { yDocToProsemirrorJSON, ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey } from "y-prosemirror";
 import Placeholder from "@tiptap/extension-placeholder";
 import StarterKit from "@tiptap/starter-kit";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
@@ -16,6 +16,19 @@ import { CollaborationClient, type ConnectionState } from "../lib/collaboration"
 import type { Document as DocType, EditorSelectionRange, ProseMirrorDoc, ProseMirrorNode, User } from "../types";
 
 const EMPTY_DOC: ProseMirrorDoc = { type: "doc", content: [] };
+const AUTO_SAVE_DEBOUNCE_MS = 3000;
+
+type SaveStatus = "idle" | "dirty" | "saving" | "saved" | "error";
+
+function formatRelativeTime(date: Date): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
+}
 
 function nodeHasRichFormatting(node: ProseMirrorNode): boolean {
   if (node.type !== "paragraph" && node.type !== "text" && node.type !== "doc") {
@@ -61,8 +74,11 @@ export default function EditorPage() {
   const navigate = useNavigate();
   const [doc, setDoc] = useState<DocType | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
+  const [editSeq, setEditSeq] = useState(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
   const [awareness, setAwareness] = useState<Awareness | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
@@ -96,8 +112,10 @@ export default function EditorPage() {
     },
     onUpdate: ({ editor: nextEditor }) => {
       const json = nextEditor.getJSON() as ProseMirrorDoc;
-      setIsDirty(JSON.stringify(json) !== savedSnapshotRef.current);
+      const dirty = JSON.stringify(json) !== savedSnapshotRef.current;
+      setIsDirty(dirty);
       setWords(wordCount(json));
+      if (dirty) setEditSeq((n) => n + 1);
     },
   });
 
@@ -184,9 +202,10 @@ export default function EditorPage() {
     loadDocument();
   };
 
-  const saveDocument = async () => {
+  const saveDocument = useCallback(async () => {
     if (!canEdit) return;
-    setSaving(true);
+    setSaveStatus("saving");
+    setSaveError(null);
     try {
       const nextContent = (ydocRef.current
         ? (yDocToProsemirrorJSON(ydocRef.current) as ProseMirrorDoc)
@@ -195,14 +214,30 @@ export default function EditorPage() {
       savedSnapshotRef.current = JSON.stringify(nextContent);
       setDoc(response.data);
       setIsDirty(false);
+      setLastSavedAt(new Date());
+      setSaveStatus("saved");
     } catch (err) {
-      if (axios.isAxiosError(err)) {
-        alert("Save failed: " + (err.response?.data?.detail || err.message));
-      }
-    } finally {
-      setSaving(false);
+      const msg = axios.isAxiosError(err)
+        ? err.response?.data?.detail || err.message
+        : "Save failed";
+      setSaveError(msg);
+      setSaveStatus("error");
     }
-  };
+  }, [canEdit, documentId, editor]);
+
+  const saveDocumentRef = useRef(saveDocument);
+  useEffect(() => {
+    saveDocumentRef.current = saveDocument;
+  }, [saveDocument]);
+
+  useEffect(() => {
+    if (editSeq === 0 || !isDirty || !canEdit) return;
+    setSaveStatus((prev) => (prev === "saving" ? prev : "dirty"));
+    const timer = window.setTimeout(() => {
+      void saveDocumentRef.current();
+    }, AUTO_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [editSeq, isDirty, canEdit]);
 
   const handleExport = async (format: "html" | "txt") => {
     setExportMenuOpen(false);
@@ -322,7 +357,28 @@ export default function EditorPage() {
               />
               <span className="text-xs text-muted">{connectionState}</span>
               {!canEdit && <span className="badge badge-info">Read only</span>}
-              {canEdit && isDirty && <span className="badge badge-warning">Unsaved</span>}
+              {canEdit && saveStatus === "saving" && (
+                <span className="editor-save-indicator">
+                  <span className="spinner" aria-hidden />
+                  Saving…
+                </span>
+              )}
+              {canEdit && saveStatus === "dirty" && (
+                <span className="badge badge-warning">Unsaved</span>
+              )}
+              {canEdit && saveStatus === "saved" && lastSavedAt && (
+                <span className="editor-save-indicator text-xs text-muted">
+                  Saved {formatRelativeTime(lastSavedAt)}
+                </span>
+              )}
+              {canEdit && saveStatus === "error" && (
+                <span
+                  className="badge badge-error"
+                  title={saveError ?? undefined}
+                >
+                  Save failed — retry
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -382,12 +438,21 @@ export default function EditorPage() {
             </div>
 
             <button
-              className={`btn btn-sm ${isDirty ? "btn-primary" : ""}`}
-              onClick={saveDocument}
-              disabled={!canEdit || saving || !isDirty}
+              className={`btn btn-sm ${saveStatus === "dirty" || saveStatus === "error" ? "btn-primary" : ""}`}
+              onClick={() => void saveDocument()}
+              disabled={
+                !canEdit || saveStatus === "saving" || (saveStatus !== "dirty" && saveStatus !== "error")
+              }
+              title={saveStatus === "error" ? saveError ?? "Retry save" : undefined}
             >
-              {saving && <span className="spinner" />}
-              {saving ? "Saving..." : isDirty ? "Save" : "Saved"}
+              {saveStatus === "saving" && <span className="spinner" />}
+              {saveStatus === "saving"
+                ? "Saving..."
+                : saveStatus === "error"
+                  ? "Retry"
+                  : saveStatus === "dirty"
+                    ? "Save now"
+                    : "Saved"}
             </button>
           </div>
         </div>
@@ -552,6 +617,17 @@ export default function EditorPage() {
           height: 8px;
           border-radius: 50%;
           flex-shrink: 0;
+        }
+        .editor-save-indicator {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          font-size: var(--font-xs);
+          color: var(--text-muted);
+        }
+        .editor-save-indicator .spinner {
+          width: 10px;
+          height: 10px;
         }
         .editor-header-right {
           display: flex;
