@@ -51,13 +51,6 @@ def _create_token(user_id: str, token_type: str, expires_delta: timedelta) -> st
     )
 
 
-@router.post(
-    "/api/auth/register",
-    response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Register a new user",
-    responses={409: {"description": "Email already registered"}},
-)
 def _create_access_token(user_id: str) -> str:
     return _create_token(
         user_id,

@@ -86,8 +86,6 @@ async def create_ai_job(
     """Accepts actions such as rewrite/summarize/translate/restructure.
     Rate-limited to 20/min per client IP + 50 total jobs per user.
     Returns 202 with a `job_id` even when the suggestion is produced inline."""
-    doc_result = await db.execute(
-        select(Document).where(Document.document_id == document_id)
     doc = await check_document_access(
         db, document_id, current_user, required_role="editor"
     )
@@ -195,8 +193,6 @@ async def get_ai_job(
     current_user: User = Depends(get_current_user),
 ):
     """Viewer role on the job's document required."""
-    result = await db.execute(
-        select(AIInteraction).where(AIInteraction.interaction_id == job_id)
     interaction = await _load_interaction_with_access(
         db, job_id, current_user, required_role="viewer"
     )
