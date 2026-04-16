@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/client";
+import { setTokens } from "../lib/auth";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -27,7 +28,7 @@ export default function LoginPage() {
         });
       }
       const resp = await api.post("/api/auth/login", { email, password });
-      localStorage.setItem("token", resp.data.access_token);
+      setTokens(resp.data.access_token, resp.data.refresh_token);
       navigate("/documents");
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {

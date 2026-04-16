@@ -12,6 +12,7 @@ import AIPanel from "../components/AIPanel";
 import PresenceBar from "../components/PresenceBar";
 import ShareModal from "../components/ShareModal";
 import VersionPanel from "../components/VersionPanel";
+import { getAccessToken } from "../lib/auth";
 import { CollaborationClient, type ConnectionState } from "../lib/collaboration";
 import type { Document as DocType, EditorSelectionRange, ProseMirrorDoc, ProseMirrorNode, User } from "../types";
 
@@ -108,7 +109,7 @@ export default function EditorPage() {
 
   useEffect(() => {
     if (!editor) return;
-    const token = localStorage.getItem("token");
+    const token = getAccessToken();
     if (!token || !documentId || doc?.document_id !== documentId) {
       return;
     }
