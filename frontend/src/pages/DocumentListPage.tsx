@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/client";
+import { clearTokens } from "../lib/auth";
 import type { DocumentListItem } from "../types";
 
 export default function DocumentListPage() {
@@ -45,7 +46,7 @@ export default function DocumentListPage() {
   };
 
   const logout = () => {
-    localStorage.removeItem("token");
+    clearTokens();
     navigate("/");
   };
 
