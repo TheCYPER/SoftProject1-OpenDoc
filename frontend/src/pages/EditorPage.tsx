@@ -466,6 +466,43 @@ export default function EditorPage() {
             <div className="rich-editor__toolbar">
               <button
                 type="button"
+                onClick={() => editor?.chain().focus().setParagraph().run()}
+                disabled={!canEdit}
+                className={editor?.isActive("paragraph") ? "is-active" : ""}
+                title="Paragraph (Ctrl+Alt+0)"
+              >
+                P
+              </button>
+              <button
+                type="button"
+                onClick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
+                disabled={!canEdit}
+                className={editor?.isActive("heading", { level: 1 }) ? "is-active" : ""}
+                title="Heading 1 (Ctrl+Alt+1)"
+              >
+                H1
+              </button>
+              <button
+                type="button"
+                onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
+                disabled={!canEdit}
+                className={editor?.isActive("heading", { level: 2 }) ? "is-active" : ""}
+                title="Heading 2 (Ctrl+Alt+2)"
+              >
+                H2
+              </button>
+              <button
+                type="button"
+                onClick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}
+                disabled={!canEdit}
+                className={editor?.isActive("heading", { level: 3 }) ? "is-active" : ""}
+                title="Heading 3 (Ctrl+Alt+3)"
+              >
+                H3
+              </button>
+              <span className="rich-editor__sep" aria-hidden />
+              <button
+                type="button"
                 onClick={() => editor?.chain().focus().toggleBold().run()}
                 disabled={!canEdit || !editor?.can().chain().focus().toggleBold().run()}
                 className={editor?.isActive("bold") ? "is-active" : ""}
@@ -484,6 +521,16 @@ export default function EditorPage() {
               </button>
               <button
                 type="button"
+                onClick={() => editor?.chain().focus().toggleCode().run()}
+                disabled={!canEdit}
+                className={editor?.isActive("code") ? "is-active" : ""}
+                title="Inline code (Ctrl+E)"
+              >
+                <code>{"</>"}</code>
+              </button>
+              <span className="rich-editor__sep" aria-hidden />
+              <button
+                type="button"
                 onClick={() => editor?.chain().focus().toggleBulletList().run()}
                 disabled={!canEdit}
                 className={editor?.isActive("bulletList") ? "is-active" : ""}
@@ -499,6 +546,16 @@ export default function EditorPage() {
                 title="Numbered List"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><text x="2" y="8" fontSize="8" fill="currentColor" stroke="none" fontFamily="system-ui">1</text><text x="2" y="14" fontSize="8" fill="currentColor" stroke="none" fontFamily="system-ui">2</text><text x="2" y="20" fontSize="8" fill="currentColor" stroke="none" fontFamily="system-ui">3</text></svg>
+              </button>
+              <span className="rich-editor__sep" aria-hidden />
+              <button
+                type="button"
+                onClick={() => editor?.chain().focus().toggleCodeBlock().run()}
+                disabled={!canEdit}
+                className={editor?.isActive("codeBlock") ? "is-active" : ""}
+                title="Code block (Ctrl+Alt+C)"
+              >
+                {"{ }"}
               </button>
             </div>
             <EditorContent editor={editor} />
