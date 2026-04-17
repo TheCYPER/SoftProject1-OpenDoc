@@ -7,14 +7,25 @@ import * as Y from "yjs";
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
 
-export type ConnectionState = "connecting" | "connected" | "disconnected";
+const BASE_RETRY_MS = 1000;
+const MAX_RETRY_MS = 15_000;
+const JITTER_RATIO = 0.3;
+
+const WS_CLOSE_AUTH = 4401;
+const WS_CLOSE_FORBIDDEN = 4403;
+
+export interface ConnectionStatus {
+  state: "connecting" | "connected" | "disconnected" | "offline" | "forbidden";
+  attempt: number;
+}
 
 interface CollaborationClientOptions {
   documentId: string;
-  token: string;
+  getToken: () => string | null;
+  refreshToken?: () => Promise<boolean>;
   ydoc: Y.Doc;
   displayName?: string;
-  onStatusChange: (status: ConnectionState) => void;
+  onStatusChange: (status: ConnectionStatus) => void;
 }
 
 function buildWebSocketUrl(documentId: string, token: string): string {
@@ -28,44 +39,57 @@ function buildWebSocketUrl(documentId: string, token: string): string {
 
 export class CollaborationClient {
   private readonly documentId: string;
-  private readonly token: string;
+  private readonly getToken: () => string | null;
+  private readonly refreshToken?: () => Promise<boolean>;
   private readonly ydoc: Y.Doc;
-  private readonly onStatusChange: (status: ConnectionState) => void;
+  private readonly onStatusChange: (status: ConnectionStatus) => void;
   private readonly originToken = Symbol("collaboration-origin");
+
   private websocket: WebSocket | null = null;
-  private reconnectAttempts = 0;
+  private attempt = 0;
   private reconnectTimer: number | null = null;
   private destroyed = false;
+  private forbidden = false;
+  private authRefreshInFlight = false;
+  private onlineListener: (() => void) | null = null;
 
   readonly awareness: awarenessProtocol.Awareness;
 
   constructor(options: CollaborationClientOptions) {
     this.documentId = options.documentId;
-    this.token = options.token;
+    this.getToken = options.getToken;
+    this.refreshToken = options.refreshToken;
     this.ydoc = options.ydoc;
     this.onStatusChange = options.onStatusChange;
     this.handleDocumentUpdate = this.handleDocumentUpdate.bind(this);
     this.handleAwarenessUpdate = this.handleAwarenessUpdate.bind(this);
 
     this.awareness = new awarenessProtocol.Awareness(options.ydoc);
-    // Set local user info
     const displayName = options.displayName ?? "User";
     const color = `hsl(${(Math.abs(hashCode(displayName)) % 360)}, 70%, 50%)`;
     this.awareness.setLocalState({ user: { name: displayName, color } });
   }
 
   connect() {
-    this.destroyed = false;
+    if (this.destroyed || this.forbidden) return;
     this.cleanupSocket();
-    this.onStatusChange("connecting");
+    this.emit("connecting");
 
-    const websocket = new WebSocket(buildWebSocketUrl(this.documentId, this.token));
+    const token = this.getToken();
+    if (!token) {
+      // No token available — schedule a retry; the user is likely being
+      // redirected by the auth interceptor anyway.
+      this.scheduleReconnect();
+      return;
+    }
+
+    const websocket = new WebSocket(buildWebSocketUrl(this.documentId, token));
     websocket.binaryType = "arraybuffer";
 
     websocket.onopen = () => {
       this.websocket = websocket;
-      this.reconnectAttempts = 0;
-      this.onStatusChange("connected");
+      this.attempt = 0;
+      this.emit("connected");
       this.ydoc.on("update", this.handleDocumentUpdate);
       this.awareness.on("update", this.handleAwarenessUpdate);
       this.sendSyncStep1();
@@ -103,22 +127,8 @@ export class CollaborationClient {
       websocket.close();
     };
 
-    websocket.onclose = () => {
-      this.ydoc.off("update", this.handleDocumentUpdate);
-      this.awareness.off("update", this.handleAwarenessUpdate);
-      if (this.websocket === websocket) {
-        this.websocket = null;
-      }
-      if (this.destroyed) {
-        awarenessProtocol.removeAwarenessStates(
-          this.awareness,
-          [this.ydoc.clientID],
-          "disconnect",
-        );
-        return;
-      }
-      this.onStatusChange("disconnected");
-      this.scheduleReconnect();
+    websocket.onclose = (event) => {
+      void this.handleClose(event, websocket);
     };
   }
 
@@ -128,6 +138,10 @@ export class CollaborationClient {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    if (this.onlineListener) {
+      window.removeEventListener("online", this.onlineListener);
+      this.onlineListener = null;
+    }
     this.ydoc.off("update", this.handleDocumentUpdate);
     this.awareness.off("update", this.handleAwarenessUpdate);
     awarenessProtocol.removeAwarenessStates(
@@ -136,7 +150,78 @@ export class CollaborationClient {
       "disconnect",
     );
     this.cleanupSocket();
-    this.onStatusChange("disconnected");
+    this.emit("disconnected");
+  }
+
+  /** Manual retry — cancels any scheduled reconnect and attempts immediately. */
+  reconnectNow() {
+    if (this.destroyed) return;
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.onlineListener) {
+      window.removeEventListener("online", this.onlineListener);
+      this.onlineListener = null;
+    }
+    this.attempt = 0;
+    this.forbidden = false;
+    this.connect();
+  }
+
+  private async handleClose(event: CloseEvent, ws: WebSocket) {
+    this.ydoc.off("update", this.handleDocumentUpdate);
+    this.awareness.off("update", this.handleAwarenessUpdate);
+    if (this.websocket === ws) {
+      this.websocket = null;
+    }
+    if (this.destroyed) {
+      awarenessProtocol.removeAwarenessStates(
+        this.awareness,
+        [this.ydoc.clientID],
+        "disconnect",
+      );
+      return;
+    }
+
+    if (event.code === WS_CLOSE_FORBIDDEN) {
+      this.forbidden = true;
+      this.emit("forbidden");
+      return;
+    }
+
+    // Emit a tentative "disconnected" so the UI reacts immediately;
+    // scheduleReconnect may upgrade this to "offline" if appropriate.
+    this.emit("disconnected");
+
+    if (
+      event.code === WS_CLOSE_AUTH &&
+      this.refreshToken &&
+      !this.authRefreshInFlight
+    ) {
+      this.authRefreshInFlight = true;
+      let refreshed = false;
+      try {
+        refreshed = await this.refreshToken();
+      } catch {
+        refreshed = false;
+      } finally {
+        this.authRefreshInFlight = false;
+      }
+      if (this.destroyed) return;
+      if (refreshed) {
+        // Reset the backoff — we have a fresh token.
+        this.attempt = 0;
+        this.connect();
+        return;
+      }
+    }
+
+    this.scheduleReconnect();
+  }
+
+  private emit(state: ConnectionStatus["state"]) {
+    this.onStatusChange({ state, attempt: this.attempt });
   }
 
   private handleDocumentUpdate(update: Uint8Array, origin: unknown) {
@@ -188,15 +273,45 @@ export class CollaborationClient {
   }
 
   private scheduleReconnect() {
+    if (this.destroyed || this.forbidden) return;
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer);
     }
-    const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 5000);
-    this.reconnectAttempts += 1;
+
+    // If the browser reports offline, don't spin retries against an
+    // unreachable network — wait for the 'online' event instead.
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      this.emit("offline");
+      this.attachOnlineListener();
+      return;
+    }
+
+    this.attempt += 1;
+    this.emit("disconnected");
+
+    const base = Math.min(BASE_RETRY_MS * 2 ** (this.attempt - 1), MAX_RETRY_MS);
+    const jitter = base * JITTER_RATIO * (Math.random() * 2 - 1);
+    const delay = Math.max(BASE_RETRY_MS, Math.floor(base + jitter));
+
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
+  }
+
+  private attachOnlineListener() {
+    if (this.onlineListener) return;
+    const onOnline = () => {
+      if (this.onlineListener) {
+        window.removeEventListener("online", this.onlineListener);
+        this.onlineListener = null;
+      }
+      if (this.destroyed) return;
+      this.attempt = 0;
+      this.connect();
+    };
+    this.onlineListener = onOnline;
+    window.addEventListener("online", onOnline);
   }
 
   private cleanupSocket() {
