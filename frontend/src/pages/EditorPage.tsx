@@ -8,7 +8,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import type { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 import api from "../api/client";
-import AIPanel from "../components/AIPanel";
+import AIPanel, { type UndoRequest } from "../components/AIPanel";
 import PresenceBar from "../components/PresenceBar";
 import ShareModal from "../components/ShareModal";
 import VersionPanel from "../components/VersionPanel";
@@ -309,6 +309,30 @@ export default function EditorPage() {
     return { ok: true };
   };
 
+  const handleUndo = (req: UndoRequest): { ok: boolean; error?: string } => {
+    if (!editor) {
+      return { ok: false, error: "Editor is not ready yet." };
+    }
+    if (!canEdit) {
+      return { ok: false, error: "You only have viewer access for this document." };
+    }
+
+    const { originalText, appliedText, selection } = req;
+
+    if (selection) {
+      // The apply replaced [selection.from, selection.to] with appliedText,
+      // so its current range is [selection.from, selection.from + appliedText.length].
+      const end = selection.from + appliedText.length;
+      editor.chain().focus().insertContentAt({ from: selection.from, to: end }, originalText).run();
+      return { ok: true };
+    }
+
+    // Whole-document apply — original selection was null, meaning the AI
+    // replaced the entire doc with plain text. Restore the original plain text.
+    editor.commands.setContent(plainTextToDoc(originalText));
+    return { ok: true };
+  };
+
   // Loading state
   if (!doc) {
     return (
@@ -574,6 +598,7 @@ export default function EditorPage() {
             editor={editor}
             getSelection={getSelection}
             onApply={handleApply}
+            onUndo={handleUndo}
           />
         </div>
       </div>
