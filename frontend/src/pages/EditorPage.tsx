@@ -13,7 +13,8 @@ import PresenceBar from "../components/PresenceBar";
 import ShareModal from "../components/ShareModal";
 import VersionPanel from "../components/VersionPanel";
 import { getAccessToken } from "../lib/auth";
-import { CollaborationClient, type ConnectionState } from "../lib/collaboration";
+import { CollaborationClient, type ConnectionStatus } from "../lib/collaboration";
+import { useToast } from "../components/Toast";
 import type { Document as DocType, EditorSelectionRange, ProseMirrorDoc, ProseMirrorNode, User } from "../types";
 
 const EMPTY_DOC: ProseMirrorDoc = { type: "doc", content: [] };
@@ -29,6 +30,21 @@ function formatRelativeTime(date: Date): string {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ago`;
+}
+
+function connectionLabel(status: ConnectionStatus): string {
+  switch (status.state) {
+    case "connecting":
+      return status.attempt > 0 ? `Reconnecting (${status.attempt})` : "Connecting";
+    case "connected":
+      return "Connected";
+    case "disconnected":
+      return status.attempt > 0 ? `Disconnected — retrying (${status.attempt})` : "Disconnected";
+    case "offline":
+      return "Offline — waiting for network";
+    case "forbidden":
+      return "Access denied";
+  }
 }
 
 function nodeHasRichFormatting(node: ProseMirrorNode): boolean {
@@ -80,7 +96,11 @@ export default function EditorPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [editSeq, setEditSeq] = useState(0);
-  const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
+    state: "disconnected",
+    attempt: 0,
+  });
+  const { toast } = useToast();
   const [awareness, setAwareness] = useState<Awareness | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
@@ -155,10 +175,22 @@ export default function EditorPage() {
 
     const client = new CollaborationClient({
       documentId,
-      token,
+      getToken: getAccessToken,
+      refreshToken: async () => {
+        // Triggers the axios response interceptor: if the access token is
+        // expired, the interceptor will refresh it via /api/auth/refresh
+        // and retry this call, so a 200 here means getAccessToken() now
+        // returns a fresh token.
+        try {
+          await api.get("/api/me");
+          return true;
+        } catch {
+          return false;
+        }
+      },
       ydoc,
       displayName: currentUser?.display_name ?? "User",
-      onStatusChange: setConnectionState,
+      onStatusChange: setConnectionStatus,
     });
     collaborationClientRef.current = client;
     setAwareness(client.awareness);
@@ -179,6 +211,12 @@ export default function EditorPage() {
     if (!editor) return;
     editor.setEditable(canEdit);
   }, [editor, canEdit]);
+
+  useEffect(() => {
+    if (connectionStatus.state !== "forbidden") return;
+    toast("You no longer have access to this document.", "error");
+    navigate("/documents");
+  }, [connectionStatus.state, navigate, toast]);
 
   const loadDocument = async () => {
     try {
@@ -353,9 +391,15 @@ export default function EditorPage() {
   }
 
   const connectionColor =
-    connectionState === "connected" ? "var(--color-success)"
-    : connectionState === "connecting" ? "var(--color-warning)"
+    connectionStatus.state === "connected" ? "var(--color-success)"
+    : connectionStatus.state === "connecting" ? "var(--color-warning)"
+    : connectionStatus.state === "forbidden" ? "var(--color-error)"
     : "var(--text-muted)";
+
+  const connectionText = connectionLabel(connectionStatus);
+  const showRetry =
+    (connectionStatus.state === "disconnected" && connectionStatus.attempt > 1) ||
+    connectionStatus.state === "offline";
 
   return (
     <div className="editor-page">
@@ -378,9 +422,19 @@ export default function EditorPage() {
               <span
                 className="editor-connection-dot"
                 style={{ background: connectionColor }}
-                title={connectionState}
+                title={connectionText}
               />
-              <span className="text-xs text-muted">{connectionState}</span>
+              <span className="text-xs text-muted">{connectionText}</span>
+              {showRetry && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm editor-retry-btn"
+                  onClick={() => collaborationClientRef.current?.reconnectNow()}
+                  title="Try to reconnect now"
+                >
+                  Retry
+                </button>
+              )}
               {!canEdit && <span className="badge badge-info">Read only</span>}
               {canEdit && saveStatus === "saving" && (
                 <span className="editor-save-indicator">
@@ -700,6 +754,12 @@ export default function EditorPage() {
           height: 8px;
           border-radius: 50%;
           flex-shrink: 0;
+        }
+        .editor-retry-btn {
+          padding: 2px 8px;
+          font-size: var(--font-xs);
+          height: auto;
+          min-height: 0;
         }
         .editor-save-indicator {
           display: inline-flex;
