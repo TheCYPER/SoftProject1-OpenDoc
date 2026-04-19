@@ -1,6 +1,14 @@
 import axios from "axios";
 import { EditorContent, useEditor } from "@tiptap/react";
-import { yDocToProsemirrorJSON, ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey } from "y-prosemirror";
+import {
+  yCursorPlugin,
+  yCursorPluginKey,
+  yDocToProsemirrorJSON,
+  ySyncPlugin,
+  ySyncPluginKey,
+  yUndoPlugin,
+  yUndoPluginKey,
+} from "y-prosemirror";
 import Placeholder from "@tiptap/extension-placeholder";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -15,6 +23,7 @@ import ShareModal from "../components/ShareModal";
 import VersionPanel from "../components/VersionPanel";
 import { getAccessToken } from "../lib/auth";
 import { CollaborationClient, type ConnectionStatus } from "../lib/collaboration";
+import { cursorBuilder, selectionBuilder } from "../lib/collaborationPresence";
 import { useToast } from "../components/Toast";
 import type { Document as DocType, EditorSelectionRange, ProseMirrorDoc, ProseMirrorNode, User } from "../types";
 
@@ -172,7 +181,7 @@ export default function EditorPage() {
     idbPersistenceRef.current?.destroy();
     idbPersistenceRef.current = new IndexeddbPersistence(`collab-doc-${documentId}`, ydoc);
 
-    editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey]);
+    editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey, yCursorPluginKey]);
     editor.registerPlugin(ySyncPlugin(yXmlFragment));
     editor.registerPlugin(yUndoPlugin());
 
@@ -196,9 +205,11 @@ export default function EditorPage() {
         }
       },
       ydoc,
+      userId: currentUser?.user_id,
       displayName: currentUser?.display_name ?? "User",
       onStatusChange: setConnectionStatus,
     });
+    editor.registerPlugin(yCursorPlugin(client.awareness, { cursorBuilder, selectionBuilder }));
     collaborationClientRef.current = client;
     setAwareness(client.awareness);
     client.connect();
@@ -209,12 +220,12 @@ export default function EditorPage() {
       idbPersistenceRef.current?.destroy();
       idbPersistenceRef.current = null;
       setAwareness(null);
-      editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey]);
+      editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey, yCursorPluginKey]);
       ydocRef.current?.destroy();
       ydocRef.current = null;
       activeDocumentIdRef.current = null;
     };
-  }, [editor, documentId, doc?.document_id, currentUser?.display_name]);
+  }, [editor, documentId, doc?.document_id, currentUser?.display_name, currentUser?.user_id]);
 
   useEffect(() => {
     if (!editor) return;
@@ -223,8 +234,15 @@ export default function EditorPage() {
 
   useEffect(() => {
     if (connectionStatus.state !== "forbidden") return;
-    toast("You no longer have access to this document.", "error");
-    navigate("/documents");
+    void (async () => {
+      try {
+        await idbPersistenceRef.current?.clearData();
+      } catch {
+        // Ignore cache-clear failures; redirect still matters more.
+      }
+      toast("You no longer have access to this document.", "error");
+      navigate("/documents");
+    })();
   }, [connectionStatus.state, navigate, toast]);
 
   // Warn the user before closing the tab if we're offline (edits are cached
@@ -266,6 +284,7 @@ export default function EditorPage() {
     collaborationClientRef.current = null;
     if (ydocRef.current) {
       editor?.unregisterPlugin([ySyncPluginKey, yUndoPluginKey]);
+      editor?.unregisterPlugin([yCursorPluginKey]);
       ydocRef.current.destroy();
       ydocRef.current = null;
     }

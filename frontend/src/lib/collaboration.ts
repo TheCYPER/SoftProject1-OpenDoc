@@ -3,6 +3,11 @@ import * as encoding from "lib0/encoding";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
 import * as Y from "yjs";
+import {
+  buildLocalCollaborationUser,
+  clearRemoteCollaborators,
+  pruneCollaboratorsByUserId,
+} from "./collaborationPresence";
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -24,6 +29,7 @@ interface CollaborationClientOptions {
   getToken: () => string | null;
   refreshToken?: () => Promise<boolean>;
   ydoc: Y.Doc;
+  userId?: string;
   displayName?: string;
   onStatusChange: (status: ConnectionStatus) => void;
 }
@@ -66,8 +72,9 @@ export class CollaborationClient {
 
     this.awareness = new awarenessProtocol.Awareness(options.ydoc);
     const displayName = options.displayName ?? "User";
-    const color = `hsl(${(Math.abs(hashCode(displayName)) % 360)}, 70%, 50%)`;
-    this.awareness.setLocalState({ user: { name: displayName, color } });
+    this.awareness.setLocalState({
+      user: buildLocalCollaborationUser(displayName, options.userId),
+    });
   }
 
   connect() {
@@ -98,6 +105,10 @@ export class CollaborationClient {
 
     websocket.onmessage = (event) => {
       const message = event.data;
+      if (typeof message === "string") {
+        this.handleControlMessage(message);
+        return;
+      }
       if (!(message instanceof ArrayBuffer)) {
         return;
       }
@@ -193,6 +204,7 @@ export class CollaborationClient {
     // Emit a tentative "disconnected" so the UI reacts immediately;
     // scheduleReconnect may upgrade this to "offline" if appropriate.
     this.emit("disconnected");
+    clearRemoteCollaborators(this.awareness);
 
     if (
       event.code === WS_CLOSE_AUTH &&
@@ -241,7 +253,12 @@ export class CollaborationClient {
     if (origin === this.originToken || this.websocket?.readyState !== WebSocket.OPEN) {
       return;
     }
-    const changedClients = [...added, ...updated, ...removed];
+    const changedClients = [...added, ...updated, ...removed].filter(
+      (clientId) => clientId === this.ydoc.clientID,
+    );
+    if (changedClients.length === 0) {
+      return;
+    }
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
     encoding.writeVarUint8Array(
@@ -321,12 +338,23 @@ export class CollaborationClient {
       websocket.close();
     }
   }
-}
 
-function hashCode(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  private handleControlMessage(raw: string) {
+    try {
+      const payload = JSON.parse(raw) as {
+        type?: string;
+        user_id?: string;
+        client_ids?: number[];
+      };
+      if (payload.type === "presence_leave") {
+        if (Array.isArray(payload.client_ids) && payload.client_ids.length > 0) {
+          awarenessProtocol.removeAwarenessStates(this.awareness, payload.client_ids, "presence_leave");
+        } else if (payload.user_id) {
+          pruneCollaboratorsByUserId(this.awareness, payload.user_id);
+        }
+      }
+    } catch {
+      // Ignore malformed control messages — they should not break sync.
+    }
   }
-  return h;
 }
