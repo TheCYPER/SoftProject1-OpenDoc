@@ -11,7 +11,11 @@ from app.models.audit_event import AuditEvent
 from app.models.document import Document
 from app.models.document_share import DocumentShare
 from app.models.user import User
-from app.realtime.websocket import close_document_sessions_for_user
+from app.realtime.websocket import (
+    CLOSE_FORBIDDEN,
+    CLOSE_PERMISSION_REFRESH,
+    close_document_sessions_for_user,
+)
 from app.schemas.document import (
     ShareCreate,
     ShareLinkCreate,
@@ -25,11 +29,117 @@ from app.services.permissions import check_document_access
 
 router = APIRouter(tags=["shares"])
 
+_USER_ROLES = {"viewer", "editor", "admin"}
 _LINK_ROLES = {"viewer", "editor"}
+_ROLE_LEVEL = {"viewer": 0, "editor": 1, "admin": 2}
 
 
 def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _normalize_user_share_ref(grantee_ref: str | None) -> str:
+    if grantee_ref is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="grantee_ref is required for USER shares",
+        )
+    normalized = grantee_ref.strip()
+    if (
+        not normalized
+        or " " in normalized
+        or normalized.count("@") != 1
+        or normalized.startswith("@")
+        or normalized.endswith("@")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="grantee_ref must be a valid email address",
+        )
+    return normalized
+
+
+def _normalize_share_role(role: str, *, allow_admin: bool) -> str:
+    normalized = role.strip().lower()
+    allowed_roles = _USER_ROLES if allow_admin else _LINK_ROLES
+    if normalized not in allowed_roles:
+        expected = "'viewer' or 'editor'" if not allow_admin else "'viewer', 'editor', or 'admin'"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"role must be {expected}",
+        )
+    return normalized
+
+
+def _normalize_future_expiry(expires_at: datetime | None) -> datetime | None:
+    if expires_at is None:
+        return None
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="expires_at must be in the future",
+        )
+    return expires_at
+
+
+def _is_expired(expires_at: datetime | None) -> bool:
+    if expires_at is None:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at <= datetime.now(timezone.utc)
+
+
+def _pick_canonical_share(shares: list[DocumentShare]) -> DocumentShare:
+    now = datetime.now(timezone.utc)
+
+    def sort_key(share: DocumentShare) -> tuple[int, int, datetime, str]:
+        expires_at = share.expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        is_active = expires_at is None or expires_at > now
+        created_at = share.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return (
+            1 if is_active else 0,
+            _ROLE_LEVEL.get(share.role, 0),
+            created_at,
+            share.share_id,
+        )
+
+    return max(shares, key=sort_key)
+
+
+async def _find_user_shares(
+    db: AsyncSession,
+    *,
+    document_id: str,
+    grantee_ref: str,
+) -> list[DocumentShare]:
+    result = await db.execute(
+        select(DocumentShare).where(
+            DocumentShare.document_id == document_id,
+            DocumentShare.grantee_type == "USER",
+            DocumentShare.grantee_ref == grantee_ref,
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def _collapse_duplicate_user_shares(
+    db: AsyncSession,
+    shares: list[DocumentShare],
+) -> DocumentShare | None:
+    if not shares:
+        return None
+    canonical_share = _pick_canonical_share(shares)
+    for duplicate_share in shares:
+        if duplicate_share.share_id != canonical_share.share_id:
+            await db.delete(duplicate_share)
+    return canonical_share
 
 
 async def _resolve_share_user_id(db: AsyncSession, share: DocumentShare) -> str | None:
@@ -72,29 +182,63 @@ async def create_share(
     """Creates a USER share keyed by email. Use the share-link endpoints for
     link-based sharing (grantee_type=LINK)."""
     doc = await check_document_access(db, document_id, current_user, required_role="owner")
-    share = DocumentShare(
-        document_id=document_id,
-        grantee_type=body.grantee_type,
-        grantee_ref=body.grantee_ref,
-        role=body.role,
-        allow_ai=body.allow_ai,
-        expires_at=body.expires_at,
-        created_by=current_user.user_id,
+    if body.grantee_type.strip().upper() != "USER":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="grantee_type must be USER",
+        )
+    grantee_ref = _normalize_user_share_ref(body.grantee_ref)
+    role = _normalize_share_role(body.role, allow_admin=True)
+    expires_at = _normalize_future_expiry(body.expires_at)
+
+    share = await _collapse_duplicate_user_shares(
+        db,
+        await _find_user_shares(
+            db,
+            document_id=document_id,
+            grantee_ref=grantee_ref,
+        ),
     )
-    db.add(share)
-    await db.flush()
+    event_type = "share.created"
+    previous_role = share.role if share is not None else None
+    if share is None:
+        share = DocumentShare(
+            document_id=document_id,
+            grantee_type="USER",
+            grantee_ref=grantee_ref,
+            role=role,
+            allow_ai=body.allow_ai,
+            expires_at=expires_at,
+            created_by=current_user.user_id,
+        )
+        db.add(share)
+        await db.flush()
+    else:
+        share.role = role
+        share.allow_ai = body.allow_ai
+        share.expires_at = expires_at
+        event_type = "share.updated"
 
     audit = AuditEvent(
         workspace_id=doc.workspace_id,
         document_id=document_id,
         actor_user_id=current_user.user_id,
-        event_type="share.created",
-        target_ref=body.grantee_ref,
-        metadata_json={"role": body.role, "grantee_type": body.grantee_type},
+        event_type=event_type,
+        target_ref=grantee_ref,
+        metadata_json={"role": role, "grantee_type": "USER"},
     )
     db.add(audit)
     await db.commit()
     await db.refresh(share)
+    target_user_id = await _resolve_share_user_id(db, share)
+    permissions_changed = event_type == "share.updated" and role != previous_role
+    if target_user_id is not None and permissions_changed:
+        await close_document_sessions_for_user(
+            document_id,
+            target_user_id,
+            close_code=CLOSE_PERMISSION_REFRESH,
+            reason="Share permissions updated",
+        )
     return share
 
 
@@ -122,14 +266,33 @@ async def update_share(
     if share is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
 
-    changes: dict = {}
+    if body.role is None and body.allow_ai is None and body.expires_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide at least one share field to update",
+        )
+
+    previous_role = share.role
+    changes: dict[str, dict[str, object | None]] = {}
     if body.role is not None:
-        changes["role"] = {"from": share.role, "to": body.role}
-        share.role = body.role
-    if body.allow_ai is not None:
+        normalized_role = _normalize_share_role(
+            body.role,
+            allow_admin=share.grantee_type != "LINK",
+        )
+        if normalized_role != share.role:
+            changes["role"] = {"from": share.role, "to": normalized_role}
+            share.role = normalized_role
+    if body.allow_ai is not None and body.allow_ai != share.allow_ai:
+        changes["allow_ai"] = {"from": share.allow_ai, "to": body.allow_ai}
         share.allow_ai = body.allow_ai
     if body.expires_at is not None:
-        share.expires_at = body.expires_at
+        normalized_expiry = _normalize_future_expiry(body.expires_at)
+        if normalized_expiry != share.expires_at:
+            changes["expires_at"] = {"from": share.expires_at, "to": normalized_expiry}
+            share.expires_at = normalized_expiry
+
+    if not changes:
+        return share
 
     audit = AuditEvent(
         workspace_id=doc.workspace_id,
@@ -144,10 +307,12 @@ async def update_share(
     await db.refresh(share)
 
     target_user_id = await _resolve_share_user_id(db, share)
-    if target_user_id is not None:
+    permissions_changed = body.role is not None and share.role != previous_role
+    if target_user_id is not None and permissions_changed:
         await close_document_sessions_for_user(
             document_id,
             target_user_id,
+            close_code=CLOSE_PERMISSION_REFRESH,
             reason="Share permissions updated",
         )
     return share
@@ -194,6 +359,7 @@ async def delete_share(
         await close_document_sessions_for_user(
             document_id,
             target_user_id,
+            close_code=CLOSE_FORBIDDEN,
             reason="Share revoked",
         )
 
@@ -221,12 +387,7 @@ async def create_share_link(
     doc = await check_document_access(
         db, document_id, current_user, required_role="owner"
     )
-
-    if body.role not in _LINK_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="role must be 'viewer' or 'editor'",
-        )
+    role = _normalize_share_role(body.role, allow_admin=False)
 
     raw_token = secrets.token_urlsafe(32)
     expires_at = None
@@ -242,7 +403,7 @@ async def create_share_link(
         document_id=document_id,
         grantee_type="LINK",
         grantee_ref=None,
-        role=body.role,
+        role=role,
         allow_ai=body.allow_ai,
         link_token_hash=_hash_token(raw_token),
         expires_at=expires_at,
@@ -257,7 +418,7 @@ async def create_share_link(
         actor_user_id=current_user.user_id,
         event_type="share_link.created",
         target_ref=share.share_id,
-        metadata_json={"role": body.role, "expires_in_hours": body.expires_in_hours},
+        metadata_json={"role": role, "expires_in_hours": body.expires_in_hours},
     )
     db.add(audit)
     await db.commit()
@@ -353,22 +514,22 @@ async def redeem_share_link(
         select(Document).where(Document.document_id == link.document_id)
     )
     doc = doc_result.scalar_one_or_none()
-    if doc is None:
+    if doc is None or doc.status == "deleted":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Share link invalid or revoked"
         )
 
-    # Idempotent: if user already has a share on this document, don't duplicate
-    existing_result = await db.execute(
-        select(DocumentShare).where(
-            DocumentShare.document_id == link.document_id,
-            DocumentShare.grantee_type == "USER",
-            DocumentShare.grantee_ref == current_user.email,
-        )
+    existing = await _collapse_duplicate_user_shares(
+        db,
+        await _find_user_shares(
+            db,
+            document_id=link.document_id,
+            grantee_ref=current_user.email,
+        ),
     )
-    existing = existing_result.scalar_one_or_none()
+    effective_role = link.role
     if existing is None:
-        user_share = DocumentShare(
+        existing = DocumentShare(
             document_id=link.document_id,
             grantee_type="USER",
             grantee_ref=current_user.email,
@@ -377,7 +538,20 @@ async def redeem_share_link(
             expires_at=link.expires_at,
             created_by=link.created_by,
         )
-        db.add(user_share)
+        db.add(existing)
+    elif _is_expired(existing.expires_at):
+        existing.role = link.role
+        existing.allow_ai = link.allow_ai
+        existing.expires_at = link.expires_at
+    else:
+        if _ROLE_LEVEL.get(link.role, 0) > _ROLE_LEVEL.get(existing.role, 0):
+            existing.role = link.role
+        existing.allow_ai = existing.allow_ai or link.allow_ai
+        if existing.expires_at is None or link.expires_at is None:
+            existing.expires_at = None
+        elif link.expires_at > existing.expires_at:
+            existing.expires_at = link.expires_at
+    effective_role = existing.role
 
     audit = AuditEvent(
         workspace_id=doc.workspace_id,
@@ -385,9 +559,9 @@ async def redeem_share_link(
         actor_user_id=current_user.user_id,
         event_type="share_link.redeemed",
         target_ref=link.share_id,
-        metadata_json={"role": link.role},
+        metadata_json={"role": effective_role, "link_role": link.role},
     )
     db.add(audit)
     await db.commit()
 
-    return ShareLinkRedeemResponse(document_id=link.document_id, role=link.role)
+    return ShareLinkRedeemResponse(document_id=link.document_id, role=effective_role)

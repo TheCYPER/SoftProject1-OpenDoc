@@ -18,6 +18,7 @@ const JITTER_RATIO = 0.3;
 
 const WS_CLOSE_AUTH = 4401;
 const WS_CLOSE_FORBIDDEN = 4403;
+const WS_CLOSE_PERMISSION_REFRESH = 4408;
 
 export interface ConnectionStatus {
   state: "connecting" | "connected" | "disconnected" | "offline" | "forbidden";
@@ -31,6 +32,7 @@ interface CollaborationClientOptions {
   ydoc: Y.Doc;
   userId?: string;
   displayName?: string;
+  onPermissionsChanged?: () => Promise<void> | void;
   onStatusChange: (status: ConnectionStatus) => void;
 }
 
@@ -48,6 +50,7 @@ export class CollaborationClient {
   private readonly getToken: () => string | null;
   private readonly refreshToken?: () => Promise<boolean>;
   private readonly ydoc: Y.Doc;
+  private readonly onPermissionsChanged?: () => Promise<void> | void;
   private readonly onStatusChange: (status: ConnectionStatus) => void;
   private readonly originToken = Symbol("collaboration-origin");
 
@@ -57,6 +60,7 @@ export class CollaborationClient {
   private destroyed = false;
   private forbidden = false;
   private authRefreshInFlight = false;
+  private permissionsRefreshInFlight = false;
   private onlineListener: (() => void) | null = null;
 
   readonly awareness: awarenessProtocol.Awareness;
@@ -66,15 +70,22 @@ export class CollaborationClient {
     this.getToken = options.getToken;
     this.refreshToken = options.refreshToken;
     this.ydoc = options.ydoc;
+    this.onPermissionsChanged = options.onPermissionsChanged;
     this.onStatusChange = options.onStatusChange;
     this.handleDocumentUpdate = this.handleDocumentUpdate.bind(this);
     this.handleAwarenessUpdate = this.handleAwarenessUpdate.bind(this);
+    this.ydoc.on("update", this.handleDocumentUpdate);
 
     this.awareness = new awarenessProtocol.Awareness(options.ydoc);
-    const displayName = options.displayName ?? "User";
-    this.awareness.setLocalState({
-      user: buildLocalCollaborationUser(displayName, options.userId),
-    });
+    this.awareness.on("update", this.handleAwarenessUpdate);
+    this.setLocalUser(options.displayName ?? "User", options.userId);
+  }
+
+  setLocalUser(displayName: string, userId?: string) {
+    this.awareness.setLocalStateField(
+      "user",
+      buildLocalCollaborationUser(displayName, userId),
+    );
   }
 
   connect() {
@@ -97,8 +108,6 @@ export class CollaborationClient {
       this.websocket = websocket;
       this.attempt = 0;
       this.emit("connected");
-      this.ydoc.on("update", this.handleDocumentUpdate);
-      this.awareness.on("update", this.handleAwarenessUpdate);
       this.sendSyncStep1();
       this.broadcastAwareness();
     };
@@ -155,6 +164,7 @@ export class CollaborationClient {
     }
     this.ydoc.off("update", this.handleDocumentUpdate);
     this.awareness.off("update", this.handleAwarenessUpdate);
+    clearRemoteCollaborators(this.awareness);
     awarenessProtocol.removeAwarenessStates(
       this.awareness,
       [this.ydoc.clientID],
@@ -181,19 +191,14 @@ export class CollaborationClient {
   }
 
   private async handleClose(event: CloseEvent, ws: WebSocket) {
-    this.ydoc.off("update", this.handleDocumentUpdate);
-    this.awareness.off("update", this.handleAwarenessUpdate);
     if (this.websocket === ws) {
       this.websocket = null;
     }
     if (this.destroyed) {
-      awarenessProtocol.removeAwarenessStates(
-        this.awareness,
-        [this.ydoc.clientID],
-        "disconnect",
-      );
       return;
     }
+
+    clearRemoteCollaborators(this.awareness);
 
     if (event.code === WS_CLOSE_FORBIDDEN) {
       this.forbidden = true;
@@ -201,10 +206,17 @@ export class CollaborationClient {
       return;
     }
 
+    if (event.code === WS_CLOSE_PERMISSION_REFRESH) {
+      await this.refreshPermissions();
+      if (this.destroyed || this.forbidden) return;
+      this.attempt = 0;
+      this.connect();
+      return;
+    }
+
     // Emit a tentative "disconnected" so the UI reacts immediately;
     // scheduleReconnect may upgrade this to "offline" if appropriate.
     this.emit("disconnected");
-    clearRemoteCollaborators(this.awareness);
 
     if (
       event.code === WS_CLOSE_AUTH &&
@@ -343,6 +355,7 @@ export class CollaborationClient {
     try {
       const payload = JSON.parse(raw) as {
         type?: string;
+        code?: string;
         user_id?: string;
         client_ids?: number[];
       };
@@ -352,9 +365,21 @@ export class CollaborationClient {
         } else if (payload.user_id) {
           pruneCollaboratorsByUserId(this.awareness, payload.user_id);
         }
+      } else if (payload.type === "error" && payload.code === "READ_ONLY") {
+        void this.refreshPermissions();
       }
     } catch {
       // Ignore malformed control messages — they should not break sync.
+    }
+  }
+
+  private async refreshPermissions() {
+    if (this.permissionsRefreshInFlight) return;
+    this.permissionsRefreshInFlight = true;
+    try {
+      await this.onPermissionsChanged?.();
+    } finally {
+      this.permissionsRefreshInFlight = false;
     }
   }
 }

@@ -17,16 +17,28 @@ export interface Collaborator {
   label: string;
 }
 
+const CURSOR_PALETTE = [
+  "#d9485f",
+  "#e46f2f",
+  "#c98512",
+  "#1f8f6b",
+  "#1f7a8c",
+  "#2563eb",
+  "#5b5bd6",
+  "#8b5cf6",
+  "#b6479d",
+  "#9a3412",
+  "#0f766e",
+  "#475569",
+];
+
 export function colorFromSeed(seed: string): string {
   let hash = 2166136261;
   for (let i = 0; i < seed.length; i += 1) {
     hash ^= seed.charCodeAt(i);
     hash = Math.imul(hash, 16777619);
   }
-  const r = 96 + (hash & 0x5f);
-  const g = 96 + ((hash >> 8) & 0x5f);
-  const b = 96 + ((hash >> 16) & 0x5f);
-  return `#${[r, g, b].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+  return CURSOR_PALETTE[Math.abs(hash) % CURSOR_PALETTE.length];
 }
 
 export function buildLocalCollaborationUser(
@@ -66,7 +78,9 @@ export function collectCollaborators(awareness: Awareness): Collaborator[] {
     if (clientId === awareness.clientID) return;
     collaborators.push(normalizeCollaborator(clientId, state));
   });
-  return collaborators;
+  return collaborators.sort((left, right) => (
+    left.name.localeCompare(right.name) || left.clientId - right.clientId
+  ));
 }
 
 export function pruneCollaboratorsByUserId(awareness: Awareness, userId: string): void {
