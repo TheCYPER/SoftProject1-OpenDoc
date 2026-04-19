@@ -221,11 +221,43 @@ export default function EditorPage() {
     editor.setEditable(canEdit);
   }, [editor, canEdit]);
 
-  useEffect(() => {
-    if (connectionStatus.state !== "forbidden") return;
+  const kickAccessDenied = useCallback(() => {
     toast("You no longer have access to this document.", "error");
     navigate("/documents");
-  }, [connectionStatus.state, navigate, toast]);
+  }, [navigate, toast]);
+
+  useEffect(() => {
+    if (connectionStatus.state !== "forbidden") return;
+    kickAccessDenied();
+  }, [connectionStatus.state, kickAccessDenied]);
+
+  // Permission-revocation safety net.
+  //
+  // The backend WS handler validates auth only at connect time. Once a user's
+  // session is open, revoking their share does not currently terminate the WS
+  // — the real fix belongs on the server (close the WS with code 4403 on share
+  // DELETE/PATCH). Until that lands, poll GET /api/documents/{id} every 30s;
+  // a 403 means we lost access and we kick ourselves out. Paired with the
+  // auto-save 403 handler below, this bounds the "still visible after revoke"
+  // window to at most the polling interval for idle users, and to ~one debounce
+  // window (3s) for actively-editing users.
+  const connectionStateRef = useRef(connectionStatus.state);
+  useEffect(() => {
+    connectionStateRef.current = connectionStatus.state;
+  }, [connectionStatus.state]);
+
+  useEffect(() => {
+    if (!documentId) return;
+    const interval = window.setInterval(() => {
+      if (connectionStateRef.current === "offline") return;
+      api.get(`/api/documents/${documentId}`).catch((err) => {
+        if (axios.isAxiosError(err) && err.response?.status === 403) {
+          kickAccessDenied();
+        }
+      });
+    }, 30_000);
+    return () => window.clearInterval(interval);
+  }, [documentId, kickAccessDenied]);
 
   // Warn the user before closing the tab if we're offline (edits are cached
   // in IndexedDB and will sync on reconnect — but if they switch browsers
@@ -287,13 +319,18 @@ export default function EditorPage() {
       setLastSavedAt(new Date());
       setSaveStatus("saved");
     } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.status === 403) {
+        // Access revoked mid-session — no point retrying, kick immediately.
+        kickAccessDenied();
+        return;
+      }
       const msg = axios.isAxiosError(err)
         ? err.response?.data?.detail || err.message
         : "Save failed";
       setSaveError(msg);
       setSaveStatus("error");
     }
-  }, [canEdit, documentId, editor]);
+  }, [canEdit, documentId, editor, kickAccessDenied]);
 
   const saveDocumentRef = useRef(saveDocument);
   useEffect(() => {
