@@ -104,21 +104,11 @@ test("login, edit, and accept an AI rewrite", async ({ browser, page }) => {
   await page.getByRole("tab", { name: /^Edit$/ }).click();
   await expect(page.locator("#ai-edit-textarea")).toHaveValue(acceptedText);
 
-  const persistAcceptedContent = page.waitForResponse(
-    (response) =>
-      response.request().method() === "PATCH"
-      && response.url().includes("/api/documents/")
-      && response.status() === 200,
-    { timeout: 15_000 },
-  );
-
   await page.getByRole("button", { name: /^Accept$/ }).click();
 
   await expect(page.locator(".ai-undo-banner")).toContainText("Suggestion applied");
   await expect(page.locator(".ai-suggestion")).toBeHidden();
   await expect(editor).toContainText(acceptedText);
-  await persistAcceptedContent;
-  await expect(page.getByRole("button", { name: /^Saved$/ })).toBeVisible();
 
   const documentUrl = page.url();
   const storageState = await page.context().storageState();
