@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Boolean, DateTime, ForeignKey
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -9,6 +9,16 @@ from app.database import Base
 
 class DocumentShare(Base):
     __tablename__ = "document_shares"
+    __table_args__ = (
+        CheckConstraint(
+            "grantee_type IN ('USER', 'LINK')",
+            name="ck_document_shares_grantee_type",
+        ),
+        CheckConstraint(
+            "role IN ('viewer', 'editor', 'admin')",
+            name="ck_document_shares_role",
+        ),
+    )
 
     share_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())

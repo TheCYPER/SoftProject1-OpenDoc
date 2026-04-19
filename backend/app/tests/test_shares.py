@@ -79,6 +79,39 @@ async def test_owner_can_create_share(
 
 
 @pytest.mark.asyncio
+async def test_duplicate_share_updates_existing_grant_instead_of_creating_duplicate(
+    client: AsyncClient, auth_headers: dict, user_bob: dict, workspace_id: str
+):
+    doc_id = await _create_doc(client, auth_headers, workspace_id)
+
+    first = await client.post(f"/api/documents/{doc_id}/shares", json={
+        "grantee_type": "USER",
+        "grantee_ref": user_bob["email"],
+        "role": "viewer",
+        "allow_ai": False,
+    }, headers=auth_headers)
+    assert first.status_code == 201
+    share_id = first.json()["share_id"]
+
+    second = await client.post(f"/api/documents/{doc_id}/shares", json={
+        "grantee_type": "USER",
+        "grantee_ref": user_bob["email"],
+        "role": "editor",
+        "allow_ai": True,
+    }, headers=auth_headers)
+    assert second.status_code == 201
+    assert second.json()["share_id"] == share_id
+    assert second.json()["role"] == "editor"
+    assert second.json()["allow_ai"] is True
+
+    list_resp = await client.get(f"/api/documents/{doc_id}/shares", headers=auth_headers)
+    assert list_resp.status_code == 200
+    shares = list_resp.json()
+    assert len(shares) == 1
+    assert shares[0]["share_id"] == share_id
+
+
+@pytest.mark.asyncio
 async def test_non_owner_cannot_create_share(
     client: AsyncClient, auth_headers: dict, user_bob: dict, workspace_id: str
 ):

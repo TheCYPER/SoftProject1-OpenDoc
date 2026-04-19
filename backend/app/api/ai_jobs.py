@@ -117,8 +117,8 @@ async def _ensure_ai_allowed_for_share(
             DocumentShare.grantee_ref == user.email,
         )
     )
-    share = result.scalar_one_or_none()
-    if share is not None and not share.allow_ai:
+    shares = result.scalars().all()
+    if shares and not any(share.allow_ai for share in shares):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="AI usage is disabled for this share.",

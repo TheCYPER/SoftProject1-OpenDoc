@@ -26,8 +26,8 @@ export default function PresenceBar({ awareness }: Props) {
 
   if (collaborators.length === 0) return null;
 
-  const visible = collaborators.slice(0, 5);
-  const overflow = collaborators.length - 5;
+  const visible = collaborators.slice(0, 4);
+  const overflow = collaborators.length - 4;
 
   return (
     <div
@@ -37,16 +37,22 @@ export default function PresenceBar({ awareness }: Props) {
       {visible.map((c) => (
         <div
           key={c.clientId}
-          className="presence-avatar"
-          style={{ background: c.color }}
+          className="presence-chip"
           title={c.name}
         >
-          {c.name.charAt(0).toUpperCase()}
+          <span
+            className="presence-avatar"
+            style={{ background: c.color }}
+            aria-hidden
+          >
+            {c.name.charAt(0).toUpperCase()}
+          </span>
+          <span className="presence-name">{c.label}</span>
         </div>
       ))}
       {overflow > 0 && (
         <div
-          className="presence-avatar presence-overflow"
+          className="presence-chip presence-overflow"
           title={`+${overflow} more`}
         >
           +{overflow}
@@ -57,11 +63,24 @@ export default function PresenceBar({ awareness }: Props) {
         .presence-bar {
           display: flex;
           align-items: center;
-          gap: -4px;
+          gap: var(--space-xs);
+          flex-wrap: wrap;
+        }
+        .presence-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+          padding: 4px 10px 4px 4px;
+          border-radius: 999px;
+          border: 1px solid var(--border);
+          background: var(--bg);
+          color: var(--text-h);
+          box-shadow: var(--shadow-sm);
         }
         .presence-avatar {
-          width: 32px;
-          height: 32px;
+          width: 24px;
+          height: 24px;
           border-radius: 50%;
           color: #fff;
           display: flex;
@@ -72,21 +91,21 @@ export default function PresenceBar({ awareness }: Props) {
           cursor: default;
           flex-shrink: 0;
           user-select: none;
-          border: 2px solid var(--bg);
-          margin-left: -6px;
-          transition: transform var(--transition);
         }
-        .presence-avatar:first-child {
-          margin-left: 0;
-        }
-        .presence-avatar:hover {
-          transform: scale(1.1);
-          z-index: 1;
+        .presence-name {
+          max-width: 110px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: var(--font-xs);
+          font-weight: 600;
         }
         .presence-overflow {
-          background: var(--bg-tertiary) !important;
+          padding: 4px 10px;
+          background: var(--bg-tertiary);
           color: var(--text-muted);
           font-size: var(--font-xs);
+          font-weight: 600;
         }
       `}</style>
     </div>

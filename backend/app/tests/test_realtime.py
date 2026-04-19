@@ -85,6 +85,17 @@ def _drain_initial_sync(ws) -> None:
     assert msg2[0] == MSG_SYNC and msg2[1] == SYNC_STEP2
 
 
+def _awareness_frame(client_id: int, clock: int, state_json: str) -> bytes:
+    payload = bytes([
+        0x01,
+        client_id,
+        clock,
+        len(state_json),
+        *state_json.encode("utf-8"),
+    ])
+    return bytes([MSG_AWARENESS, len(payload)]) + payload
+
+
 def test_websocket_rejects_invalid_token():
     app.dependency_overrides[get_db] = _override_get_db
     with TestClient(app) as client:
@@ -215,13 +226,54 @@ def test_presence_leave_includes_awareness_client_ids():
             _drain_initial_sync(ws_watcher)
             with client.websocket_connect(f"/ws/documents/{doc_id}?token={token}") as ws_leaving:
                 _drain_initial_sync(ws_leaving)
-                awareness_payload = bytes([0x01, 0x07, 0x01, 0x02, 0x7B, 0x7D])
-                awareness_frame = bytes([MSG_AWARENESS, len(awareness_payload)]) + awareness_payload
+                awareness_frame = _awareness_frame(7, 1, "{}")
                 ws_leaving.send_bytes(awareness_frame)
                 assert ws_watcher.receive_bytes() == awareness_frame
+            message = ws_watcher.receive()
+            if "text" not in message:
+                message = ws_watcher.receive()
+            payload = _json.loads(message["text"])
+            assert payload["type"] == "presence_leave"
+            assert payload["client_ids"] == [7]
+    app.dependency_overrides.clear()
+
+
+def test_disconnect_broadcasts_awareness_removal_before_presence_leave():
+    """Peers should get an awareness null-state update before the JSON leave frame."""
+    import json as _json
+
+    app.dependency_overrides[get_db] = _override_get_db
+    with TestClient(app) as client:
+        token, doc_id = _setup_user_and_doc(client)
+        ws_router._rooms.clear()
+        with client.websocket_connect(f"/ws/documents/{doc_id}?token={token}") as ws_watcher:
+            _drain_initial_sync(ws_watcher)
+            with client.websocket_connect(f"/ws/documents/{doc_id}?token={token}") as ws_leaving:
+                _drain_initial_sync(ws_leaving)
+                awareness_frame = _awareness_frame(7, 1, "{}")
+                ws_leaving.send_bytes(awareness_frame)
+                assert ws_watcher.receive_bytes() == awareness_frame
+            removal_frame = ws_watcher.receive_bytes()
+            assert removal_frame == _awareness_frame(7, 1, "null")
             payload = _json.loads(ws_watcher.receive_text())
             assert payload["type"] == "presence_leave"
             assert payload["client_ids"] == [7]
+    app.dependency_overrides.clear()
+
+
+def test_new_connection_receives_current_awareness_snapshot():
+    """A newcomer should receive already-active awareness state without waiting for another edit."""
+    app.dependency_overrides[get_db] = _override_get_db
+    with TestClient(app) as client:
+        token, doc_id = _setup_user_and_doc(client)
+        ws_router._rooms.clear()
+        with client.websocket_connect(f"/ws/documents/{doc_id}?token={token}") as ws_existing:
+            _drain_initial_sync(ws_existing)
+            awareness_frame = _awareness_frame(7, 1, "{}")
+            ws_existing.send_bytes(awareness_frame)
+            with client.websocket_connect(f"/ws/documents/{doc_id}?token={token}") as ws_new:
+                _drain_initial_sync(ws_new)
+                assert ws_new.receive_bytes() == awareness_frame
     app.dependency_overrides.clear()
 
 
@@ -336,4 +388,45 @@ def test_revoked_share_closes_active_websocket():
                     assert exc.code == 4403
                 except TimeoutError:
                     assert False, "Timed out waiting for revoke-triggered websocket close"
+    app.dependency_overrides.clear()
+
+
+def test_role_change_closes_active_websocket_for_permission_refresh():
+    """Changing a USER share role should force the grantee to reconnect with fresh permissions."""
+    app.dependency_overrides[get_db] = _override_get_db
+    with TestClient(app) as client:
+        owner_token, doc_id = _setup_user_and_doc(client)
+        ws_router._rooms.clear()
+
+        bob_email, bob_token = _register_and_login(client, "downgraded", "Downgraded Bob")
+        share_resp = client.post(
+            f"/api/documents/{doc_id}/shares",
+            json={
+                "grantee_type": "USER",
+                "grantee_ref": bob_email,
+                "role": "editor",
+                "allow_ai": True,
+            },
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert share_resp.status_code == 201
+        share_id = share_resp.json()["share_id"]
+
+        with client.websocket_connect(f"/ws/documents/{doc_id}?token={bob_token}") as ws:
+            _drain_initial_sync(ws)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(ws.receive_text)
+                patch_resp = client.patch(
+                    f"/api/documents/{doc_id}/shares/{share_id}",
+                    json={"role": "viewer"},
+                    headers={"Authorization": f"Bearer {owner_token}"},
+                )
+                assert patch_resp.status_code == 200
+                try:
+                    future.result(timeout=2)
+                    assert False, "Expected websocket disconnect after role change"
+                except WebSocketDisconnect as exc:
+                    assert exc.code == 4408
+                except TimeoutError:
+                    assert False, "Timed out waiting for role-change websocket close"
     app.dependency_overrides.clear()

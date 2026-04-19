@@ -46,6 +46,21 @@ async def test_audit_trail_records_share_events(
 
 
 @pytest.mark.asyncio
+async def test_owner_can_read_deleted_document_audit_trail(
+    client: AsyncClient, auth_headers: dict, workspace_id: str
+):
+    doc_id = await _create_doc(client, auth_headers, workspace_id)
+
+    delete_resp = await client.delete(f"/api/documents/{doc_id}", headers=auth_headers)
+    assert delete_resp.status_code == 204
+
+    audit_resp = await client.get(f"/api/documents/{doc_id}/audit", headers=auth_headers)
+    assert audit_resp.status_code == 200
+    event_types = [event["event_type"] for event in audit_resp.json()]
+    assert "document.deleted" in event_types
+
+
+@pytest.mark.asyncio
 async def test_non_owner_cannot_read_audit(
     client: AsyncClient, auth_headers: dict, user_bob: dict, workspace_id: str
 ):
@@ -117,3 +132,23 @@ async def test_audit_trail_records_version_restore(
     resp = await client.get(f"/api/documents/{doc_id}/audit", headers=auth_headers)
     event_types = [e["event_type"] for e in resp.json()]
     assert "version.restored" in event_types
+
+
+@pytest.mark.asyncio
+async def test_document_mutations_are_audited(
+    client: AsyncClient, auth_headers: dict, workspace_id: str
+):
+    doc_id = await _create_doc(client, auth_headers, workspace_id)
+
+    update_resp = await client.patch(
+        f"/api/documents/{doc_id}",
+        json={"title": "Renamed"},
+        headers=auth_headers,
+    )
+    assert update_resp.status_code == 200
+
+    audit_resp = await client.get(f"/api/documents/{doc_id}/audit", headers=auth_headers)
+    assert audit_resp.status_code == 200
+    event_types = [event["event_type"] for event in audit_resp.json()]
+    assert "document.created" in event_types
+    assert "document.updated" in event_types

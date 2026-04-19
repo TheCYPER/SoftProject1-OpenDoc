@@ -2,16 +2,18 @@ import html
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
+from app.models.audit_event import AuditEvent
 from app.models.document import Document
 from app.models.document_share import DocumentShare
 from app.models.document_version import DocumentVersion
 from app.models.user import User
+from app.realtime.websocket import encode_prosemirror_json_to_yjs_state
 from app.schemas.document import (
     DocumentCreate,
     DocumentListItem,
@@ -37,11 +39,20 @@ async def create_document(
 ):
     """Create a document owned by the caller with an initial version snapshot."""
     initial_revision = f"rev_{uuid.uuid4().hex[:8]}"
+    initial_content = body.initial_content or {"type": "doc", "content": []}
+    try:
+        initial_yjs_state = encode_prosemirror_json_to_yjs_state(initial_content)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     doc = Document(
         workspace_id=body.workspace_id,
         created_by=current_user.user_id,
         title=body.title,
-        content=body.initial_content or {"type": "doc", "content": []},
+        content=initial_content,
+        yjs_state=initial_yjs_state,
         current_revision_id=initial_revision,
     )
     db.add(doc)
@@ -55,6 +66,14 @@ async def create_document(
         created_by=current_user.user_id,
     )
     db.add(version)
+    db.add(AuditEvent(
+        workspace_id=doc.workspace_id,
+        document_id=doc.document_id,
+        actor_user_id=current_user.user_id,
+        event_type="document.created",
+        target_ref=doc.document_id,
+        metadata_json={"title": doc.title},
+    ))
     await db.commit()
     await db.refresh(doc)
     return doc
@@ -134,12 +153,22 @@ async def update_document(
 
     update_data = body.model_dump(exclude_unset=True)
     version_reason = None
+    next_yjs_state: bytes | None = None
     if "content" in update_data:
+        try:
+            next_yjs_state = encode_prosemirror_json_to_yjs_state(update_data["content"])
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
         new_revision = f"rev_{uuid.uuid4().hex[:8]}"
         doc.current_revision_id = new_revision
         version_reason = "update"
     for field, value in update_data.items():
         setattr(doc, field, value)
+    if next_yjs_state is not None:
+        doc.yjs_state = next_yjs_state
 
     if version_reason is not None:
         db.add(DocumentVersion(
@@ -148,6 +177,15 @@ async def update_document(
             base_revision_id=doc.current_revision_id,
             reason=version_reason,
             created_by=current_user.user_id,
+        ))
+    if update_data:
+        db.add(AuditEvent(
+            workspace_id=doc.workspace_id,
+            document_id=doc.document_id,
+            actor_user_id=current_user.user_id,
+            event_type="document.updated",
+            target_ref=doc.document_id,
+            metadata_json={"fields": sorted(update_data.keys())},
         ))
 
     await db.commit()
@@ -169,6 +207,14 @@ async def delete_document(
     """Marks status='deleted'; rows remain in the DB for audit."""
     doc = await check_document_access(db, document_id, current_user, required_role="owner")
     doc.status = "deleted"
+    db.add(AuditEvent(
+        workspace_id=doc.workspace_id,
+        document_id=doc.document_id,
+        actor_user_id=current_user.user_id,
+        event_type="document.deleted",
+        target_ref=doc.document_id,
+        metadata_json=None,
+    ))
     await db.commit()
 
 

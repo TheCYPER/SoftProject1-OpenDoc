@@ -151,10 +151,19 @@ export default function EditorPage() {
     },
   });
 
+  const loadDocument = useCallback(async () => {
+    try {
+      const resp = await api.get(`/api/documents/${documentId}`);
+      setDoc(resp.data);
+    } catch {
+      navigate("/documents");
+    }
+  }, [documentId, navigate]);
+
   useEffect(() => {
-    loadDocument();
+    void loadDocument();
     api.get("/api/me").then((r) => setCurrentUser(r.data)).catch(() => {});
-  }, [documentId]);
+  }, [documentId, loadDocument]);
 
   useEffect(() => {
     if (!editor) return;
@@ -163,6 +172,10 @@ export default function EditorPage() {
       return;
     }
     if (activeDocumentIdRef.current === documentId && collaborationClientRef.current && ydocRef.current) {
+      collaborationClientRef.current.setLocalUser(
+        currentUser?.display_name ?? "User",
+        currentUser?.user_id,
+      );
       return;
     }
 
@@ -207,6 +220,7 @@ export default function EditorPage() {
       ydoc,
       userId: currentUser?.user_id,
       displayName: currentUser?.display_name ?? "User",
+      onPermissionsChanged: loadDocument,
       onStatusChange: setConnectionStatus,
     });
     editor.registerPlugin(yCursorPlugin(client.awareness, { cursorBuilder, selectionBuilder }));
@@ -225,7 +239,7 @@ export default function EditorPage() {
       ydocRef.current = null;
       activeDocumentIdRef.current = null;
     };
-  }, [editor, documentId, doc?.document_id, currentUser?.display_name, currentUser?.user_id]);
+  }, [editor, documentId, doc?.document_id, currentUser?.display_name, currentUser?.user_id, loadDocument]);
 
   useEffect(() => {
     if (!editor) return;
@@ -267,15 +281,6 @@ export default function EditorPage() {
     prevConnectionStateRef.current = connectionStatus.state;
   }, [connectionStatus.state, toast]);
 
-  const loadDocument = async () => {
-    try {
-      const resp = await api.get(`/api/documents/${documentId}`);
-      setDoc(resp.data);
-    } catch {
-      navigate("/documents");
-    }
-  };
-
   const reloadFromServer = () => {
     // Force Yjs re-initialization — destroys old Yjs doc and reconnects to
     // get the latest authoritative state from the server.
@@ -288,7 +293,7 @@ export default function EditorPage() {
       ydocRef.current.destroy();
       ydocRef.current = null;
     }
-    loadDocument();
+    void loadDocument();
   };
 
   const saveDocument = useCallback(async () => {

@@ -28,6 +28,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, replace
+from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
@@ -95,6 +96,94 @@ def _read_varuint8array(data: bytes, offset: int) -> tuple[bytes, int]:
 def _write_varuint8array(data: bytes) -> bytes:
     """Write a lib0 varuint-length-prefixed byte array."""
     return _write_varuint(len(data)) + data
+
+
+def _mark_attributes_from_prosemirror(
+    marks: list[dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    yjs_attrs: dict[str, dict[str, Any]] = {}
+    for mark in marks or []:
+        if not isinstance(mark, dict):
+            raise ValueError("Text marks must be objects")
+        mark_type = mark.get("type")
+        if not isinstance(mark_type, str) or not mark_type:
+            raise ValueError("Text marks require a type")
+        mark_attrs = mark.get("attrs") or {}
+        if not isinstance(mark_attrs, dict):
+            raise ValueError("Text mark attrs must be an object")
+        yjs_attrs[mark_type] = mark_attrs
+    return yjs_attrs
+
+
+def _append_prosemirror_nodes(
+    parent: pycrdt.XmlFragment | pycrdt.XmlElement,
+    nodes: list[dict[str, Any]] | None,
+) -> None:
+    if nodes is None:
+        return
+    if not isinstance(nodes, list):
+        raise ValueError("Document content must be a list of nodes")
+
+    index = 0
+    while index < len(nodes):
+        node = nodes[index]
+        if not isinstance(node, dict):
+            raise ValueError("Document nodes must be objects")
+
+        node_type = node.get("type")
+        if not isinstance(node_type, str) or not node_type:
+            raise ValueError("Document nodes require a type")
+
+        if node_type == "text":
+            text_node = pycrdt.XmlText()
+            parent.children.append(text_node)
+            text_offset = 0
+            while index < len(nodes):
+                current = nodes[index]
+                if not isinstance(current, dict) or current.get("type") != "text":
+                    break
+                text_value = current.get("text", "")
+                if text_value is None:
+                    text_value = ""
+                if not isinstance(text_value, str):
+                    raise ValueError("Text node text must be a string")
+                if text_value:
+                    mark_attrs = _mark_attributes_from_prosemirror(current.get("marks"))
+                    text_node.insert(text_offset, text_value, mark_attrs or None)
+                    text_offset += len(text_value)
+                index += 1
+            continue
+
+        attrs = node.get("attrs") or {}
+        if not isinstance(attrs, dict):
+            raise ValueError(f"{node_type} attrs must be an object")
+
+        element = pycrdt.XmlElement(node_type)
+        parent.children.append(element)
+        for key, value in attrs.items():
+            if value is not None:
+                element.attributes[str(key)] = value
+        _append_prosemirror_nodes(element, node.get("content"))
+        index += 1
+
+
+def encode_prosemirror_json_to_yjs_state(content: dict[str, Any] | None) -> bytes:
+    """Encode ProseMirror JSON into Yjs update bytes.
+
+    REST writes use this to keep `documents.content` and `documents.yjs_state`
+    representing the same document tree.
+    """
+    normalized_content = content or {"type": "doc", "content": []}
+    if not isinstance(normalized_content, dict):
+        raise ValueError("Document content must be a ProseMirror JSON object")
+    if normalized_content.get("type") != "doc":
+        raise ValueError("Document content root must be a ProseMirror doc node")
+
+    ydoc = pycrdt.Doc()
+    ydoc["prosemirror"] = pycrdt.XmlFragment()
+    fragment = ydoc["prosemirror"]
+    _append_prosemirror_nodes(fragment, normalized_content.get("content"))
+    return bytes(ydoc.get_update())
 
 
 def _read_varstring(data: bytes, offset: int) -> tuple[str, int]:
@@ -268,7 +357,13 @@ async def _broadcast_bytes(room: Room, sender_id: str, data: bytes) -> None:
         except Exception:
             dead.append(conn_id)
     for conn_id in dead:
-        room.connections.pop(conn_id, None)
+        connection = room.connections.get(conn_id)
+        if connection is None:
+            continue
+        try:
+            await connection.websocket.close()
+        except Exception:
+            pass
 
 
 async def _broadcast_text(room: Room, sender_id: str | None, payload: dict) -> None:
@@ -283,7 +378,13 @@ async def _broadcast_text(room: Room, sender_id: str | None, payload: dict) -> N
         except Exception:
             dead.append(conn_id)
     for conn_id in dead:
-        room.connections.pop(conn_id, None)
+        connection = room.connections.get(conn_id)
+        if connection is None:
+            continue
+        try:
+            await connection.websocket.close()
+        except Exception:
+            pass
 
 
 async def _send_text_safe(websocket: WebSocket, payload: dict) -> None:
