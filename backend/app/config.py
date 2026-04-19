@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     WS_PERSIST_INTERVAL_UPDATES: int = 50  # flush yjs_state to DB every N applied updates
 
     # AI - default provider when user doesn't specify
-    AI_DEFAULT_PROVIDER: str = "ollama"  # openai | groq | claude | ollama
+    AI_DEFAULT_PROVIDER: str = "ollama"  # openai | groq | claude | ollama | mock
 
     # OpenAI (user can override via request)
     OPENAI_API_KEY: str = ""
@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # Ollama (local, free)
     OLLAMA_BASE_URL: str = "http://ollama:11434"
     OLLAMA_MODEL: str = "qwen2.5:8b"
+
+    # Mock provider (test-only / deterministic browser automation)
+    MOCK_AI_RESPONSE: str = "Mock rewritten output."
+    MOCK_AI_CHUNK_SIZE: int = 12
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

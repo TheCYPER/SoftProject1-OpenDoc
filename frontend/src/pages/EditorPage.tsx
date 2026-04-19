@@ -140,6 +140,7 @@ export default function EditorPage() {
     editorProps: {
       attributes: {
         class: "rich-editor__content",
+        "data-testid": "editor-content",
       },
     },
     onUpdate: ({ editor: nextEditor }) => {
