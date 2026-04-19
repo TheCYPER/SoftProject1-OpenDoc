@@ -20,6 +20,7 @@ class AISuggestion(Base):
     stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     original_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     suggested_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    partial_output_available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     diff_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     accepted_segments_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     applied_revision_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
