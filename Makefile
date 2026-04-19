@@ -45,10 +45,10 @@ install-frontend:
 	cd $(FRONTEND_DIR) && npm install
 
 migrate:
-	cd $(BACKEND_DIR) && ../$(VENV)/bin/alembic upgrade head
+	cd $(BACKEND_DIR) && PYTHONPATH=. ../$(VENV)/bin/python -m alembic upgrade head
 
 backend:
-	cd $(BACKEND_DIR) && ../$(VENV)/bin/uvicorn app.main:app --reload --port 8000
+	cd $(BACKEND_DIR) && PYTHONPATH=. ../$(VENV)/bin/python -m uvicorn app.main:app --reload --port 8000
 
 frontend:
 	cd $(FRONTEND_DIR) && npm run dev -- --host
@@ -57,7 +57,7 @@ frontend:
 dev:
 	@echo ">> starting backend (port 8000) + frontend (port 5173)"
 	@set -m; \
-	( cd $(BACKEND_DIR) && ../$(VENV)/bin/uvicorn app.main:app --reload --port 8000 ) & \
+	( cd $(BACKEND_DIR) && PYTHONPATH=. ../$(VENV)/bin/python -m uvicorn app.main:app --reload --port 8000 ) & \
 	BE_PID=$$!; \
 	( cd $(FRONTEND_DIR) && npm run dev -- --host ) & \
 	FE_PID=$$!; \

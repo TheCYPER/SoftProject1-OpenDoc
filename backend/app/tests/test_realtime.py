@@ -47,7 +47,7 @@ def _setup_user_and_doc(client: TestClient) -> tuple[str, str]:
             await session.refresh(ws)
             return ws.workspace_id
 
-    workspace_id = asyncio.get_event_loop().run_until_complete(_make_ws())
+    workspace_id = asyncio.run(_make_ws())
     headers = {"Authorization": f"Bearer {token}"}
 
     resp = client.post("/api/documents", json={
