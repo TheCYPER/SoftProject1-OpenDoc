@@ -351,6 +351,7 @@ export default function EditorPage() {
 
   const handleApply = (
     newText: string,
+    originalText: string,
     selection?: EditorSelectionRange
   ): { ok: boolean; error?: string } => {
     if (!editor) {
@@ -361,6 +362,14 @@ export default function EditorPage() {
     }
 
     if (selection) {
+      const currentSelectedText = editor.state.doc.textBetween(selection.from, selection.to, "\n");
+      if (currentSelectedText !== originalText) {
+        return {
+          ok: false,
+          error:
+            "The selected text changed while the AI suggestion was being generated. Review the suggestion and re-run AI on the latest content.",
+        };
+      }
       editor.chain().focus().insertContentAt(selection, newText).run();
       return { ok: true };
     }
@@ -705,6 +714,8 @@ export default function EditorPage() {
             documentId={documentId!}
             editor={editor}
             getSelection={getSelection}
+            canEdit={canEdit}
+            baseRevisionId={doc.current_revision_id}
             onApply={handleApply}
             onUndo={handleUndo}
           />

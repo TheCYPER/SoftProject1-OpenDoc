@@ -7,7 +7,7 @@ import {
   setTokens,
 } from "../lib/auth";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 const api = axios.create({
   baseURL: API_BASE,
@@ -35,7 +35,7 @@ function isAuthEndpoint(url: string | undefined): boolean {
   );
 }
 
-async function refreshAccessToken(): Promise<string | null> {
+export async function refreshAccessToken(): Promise<string | null> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) return null;
   try {
@@ -53,6 +53,47 @@ async function refreshAccessToken(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+export async function authorizedFetch(
+  input: string,
+  init: RequestInit = {},
+  retry = true,
+): Promise<Response> {
+  const url = input.startsWith("http") ? input : `${API_BASE}${input}`;
+  const headers = new Headers(init.headers ?? {});
+  const accessToken = getAccessToken();
+  if (accessToken) {
+    headers.set("Authorization", `Bearer ${accessToken}`);
+  }
+
+  const response = await fetch(url, {
+    ...init,
+    headers,
+  });
+
+  if (
+    response.status !== 401 ||
+    !retry ||
+    isAuthEndpoint(url)
+  ) {
+    return response;
+  }
+
+  const refreshed = await refreshAccessToken();
+  if (!refreshed) {
+    clearTokens();
+    if (typeof window !== "undefined" && window.location.pathname !== "/") {
+      window.location.assign("/");
+    }
+    return response;
+  }
+
+  headers.set("Authorization", `Bearer ${refreshed}`);
+  return fetch(url, {
+    ...init,
+    headers,
+  });
 }
 
 api.interceptors.response.use(
