@@ -59,6 +59,14 @@ interface DiffToken {
   text: string;
 }
 
+interface DiffSegment {
+  type: "eq" | "block";
+  text?: string;
+  id?: number;
+  originalText?: string;
+  replacementText?: string;
+}
+
 interface AppliedRecord {
   originalText: string;
   appliedText: string;
@@ -106,6 +114,64 @@ function wordDiff(a: string, b: string): DiffToken[] {
   return out;
 }
 
+function buildDiffSegments(tokens: DiffToken[]): DiffSegment[] {
+  const segments: DiffSegment[] = [];
+  let currentEqual = "";
+  let currentBlockTokens: DiffToken[] = [];
+  let blockId = 0;
+
+  const flushEqual = () => {
+    if (!currentEqual) return;
+    segments.push({ type: "eq", text: currentEqual });
+    currentEqual = "";
+  };
+
+  const flushBlock = () => {
+    if (currentBlockTokens.length === 0) return;
+    segments.push({
+      type: "block",
+      id: blockId,
+      originalText: currentBlockTokens
+        .filter((token) => token.type !== "add")
+        .map((token) => token.text)
+        .join(""),
+      replacementText: currentBlockTokens
+        .filter((token) => token.type !== "del")
+        .map((token) => token.text)
+        .join(""),
+    });
+    blockId += 1;
+    currentBlockTokens = [];
+  };
+
+  for (const token of tokens) {
+    if (token.type === "eq") {
+      flushBlock();
+      currentEqual += token.text;
+    } else {
+      flushEqual();
+      currentBlockTokens.push(token);
+    }
+  }
+
+  flushBlock();
+  flushEqual();
+  return segments;
+}
+
+function composePartialSuggestion(segments: DiffSegment[], selectedBlockIds: number[]): string {
+  const selected = new Set(selectedBlockIds);
+  return segments.map((segment) => {
+    if (segment.type === "eq") {
+      return segment.text ?? "";
+    }
+    if (selected.has(segment.id ?? -1)) {
+      return segment.replacementText ?? "";
+    }
+    return segment.originalText ?? "";
+  }).join("");
+}
+
 function suggestionFromHistory(item: AIHistoryItem): AISuggestion | null {
   if (!item.suggestion_id) return null;
   return {
@@ -147,12 +213,20 @@ export default function AIPanel({
   const [model, setModel] = useState("");
   const [history, setHistory] = useState<AIHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedDiffBlocks, setSelectedDiffBlocks] = useState<number[]>([]);
 
   const editorText = editor?.getText({ blockSeparator: "\n" }) ?? "";
   const isStreaming = streamState === "streaming";
   const original = suggestion?.original_text ?? "";
   const suggested = suggestion?.suggested_text ?? "";
   const diff = suggestion && !isStreaming ? wordDiff(original, suggested) : [];
+  const diffSegments = buildDiffSegments(diff);
+  const diffBlocks = diffSegments.filter((segment): segment is DiffSegment & { type: "block"; id: number; originalText: string; replacementText: string } => (
+    segment.type === "block"
+      && typeof segment.id === "number"
+      && typeof segment.originalText === "string"
+      && typeof segment.replacementText === "string"
+  ));
 
   useEffect(() => {
     if (suggestion?.suggested_text != null) {
@@ -160,8 +234,16 @@ export default function AIPanel({
       if (!isStreaming) {
         setViewMode("diff");
       }
+      setSelectedDiffBlocks(buildDiffSegments(wordDiff(
+        suggestion.original_text ?? "",
+        suggestion.suggested_text,
+      ))
+        .filter((segment): segment is DiffSegment & { type: "block"; id: number } => (
+          segment.type === "block" && typeof segment.id === "number"
+        ))
+        .map((block) => block.id));
     }
-  }, [isStreaming, suggestion?.suggestion_id, suggestion?.suggested_text]);
+  }, [isStreaming, suggestion?.original_text, suggestion?.suggestion_id, suggestion?.suggested_text]);
 
   useEffect(() => {
     void loadHistory();
@@ -334,6 +416,46 @@ export default function AIPanel({
     void loadHistory();
   }
 
+  async function handleAcceptSelected() {
+    if (!suggestion || !selectedJobId) return;
+    if (historyPreview) {
+      setError("History items are review-only. Re-run AI on the current selection to apply a fresh suggestion.");
+      return;
+    }
+    if (selectedDiffBlocks.length === 0) {
+      setError("Select at least one changed block to apply.");
+      return;
+    }
+
+    const textToApply = composePartialSuggestion(diffSegments, selectedDiffBlocks);
+    const originalText = suggestion.original_text ?? "";
+    const result = onApply(textToApply, originalText, selectionSnapshot?.range ?? undefined);
+    if (!result.ok) {
+      setError(result.error || "Unable to apply partial suggestion");
+      return;
+    }
+
+    try {
+      await applyAIJob(selectedJobId, "partial", baseRevisionId, selectedDiffBlocks);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to record partial apply.");
+      return;
+    }
+
+    setLastApplied({
+      originalText,
+      appliedText: textToApply,
+      selection: selectionSnapshot?.range ?? null,
+    });
+    toast("Selected changes applied", "success");
+    setSuggestion(null);
+    setSelectedJobId(null);
+    setSelectionSnapshot(null);
+    setHistoryPreview(false);
+    setError("");
+    void loadHistory();
+  }
+
   async function handleReject() {
     if (selectedJobId) {
       try {
@@ -370,6 +492,12 @@ export default function AIPanel({
     setSuggestion(historySuggestion);
     setStreamState(item.status === "failed" ? "error" : "ready");
     setError(item.error_message ?? "");
+  }
+
+  function toggleDiffBlock(blockId: number) {
+    setSelectedDiffBlocks((current) => current.includes(blockId)
+      ? current.filter((id) => id !== blockId)
+      : [...current, blockId].sort((left, right) => left - right));
   }
 
   return (
@@ -563,19 +691,38 @@ export default function AIPanel({
               </div>
 
               {viewMode === "diff" && (
-                <div className="ai-suggestion-text ai-diff">
-                  {diff.length === 0 ? (
-                    <span className="text-muted">No changes.</span>
-                  ) : (
-                    diff.map((token, index) => {
-                      if (token.type === "eq") return <span key={index}>{token.text}</span>;
-                      if (token.type === "del") {
-                        return <del key={index} className="ai-diff-del">{token.text}</del>;
-                      }
-                      return <ins key={index} className="ai-diff-add">{token.text}</ins>;
-                    })
+                <>
+                  {diffBlocks.length > 0 && (
+                    <div className="ai-diff-blocks">
+                      {diffBlocks.map((block) => (
+                        <label key={block.id} className="ai-diff-block">
+                          <input
+                            type="checkbox"
+                            checked={selectedDiffBlocks.includes(block.id)}
+                            onChange={() => toggleDiffBlock(block.id)}
+                          />
+                          <span className="ai-diff-block__preview">
+                            <strong>Original:</strong> {block.originalText || "(empty)"}{" "}
+                            <strong>Suggested:</strong> {block.replacementText || "(empty)"}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
                   )}
-                </div>
+                  <div className="ai-suggestion-text ai-diff">
+                    {diff.length === 0 ? (
+                      <span className="text-muted">No changes.</span>
+                    ) : (
+                      diff.map((token, index) => {
+                        if (token.type === "eq") return <span key={index}>{token.text}</span>;
+                        if (token.type === "del") {
+                          return <del key={index} className="ai-diff-del">{token.text}</del>;
+                        }
+                        return <ins key={index} className="ai-diff-add">{token.text}</ins>;
+                      })
+                    )}
+                  </div>
+                </>
               )}
 
               {viewMode === "side" && (
@@ -618,6 +765,11 @@ export default function AIPanel({
                 <button className="btn btn-primary btn-sm" onClick={() => void handleAccept()}>
                   Accept{editedSuggestion !== suggested ? " edited" : ""}
                 </button>
+                {diffBlocks.length > 0 && (
+                  <button className="btn btn-sm" onClick={() => void handleAcceptSelected()}>
+                    Accept selected
+                  </button>
+                )}
                 <button className="btn btn-sm" onClick={() => void handleReject()}>
                   Reject
                 </button>
@@ -751,6 +903,24 @@ export default function AIPanel({
           max-height: 300px;
           overflow-y: auto;
           color: var(--text-h);
+        }
+        .ai-diff-blocks {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          padding: var(--space-sm) var(--space-md);
+          border-bottom: 1px solid var(--border);
+          background: var(--bg);
+        }
+        .ai-diff-block {
+          display: flex;
+          gap: 8px;
+          align-items: flex-start;
+          font-size: var(--font-xs);
+          color: var(--text-h);
+        }
+        .ai-diff-block__preview {
+          line-height: 1.5;
         }
         .ai-diff-add {
           background: var(--color-success-bg);
