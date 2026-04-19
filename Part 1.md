@@ -1,5 +1,21 @@
 # Part 1: Requirements Engineering
 
+## Abstract
+
+This document defines the requirements baseline for the collaborative document editor and AI writing assistant. It should be read together with the shipped Assignment 2 status documents: [TASKS.md](./TASKS.md) records what is implemented, and [DEVIATIONS.md](./DEVIATIONS.md) records where the final PoC differs from this baseline. For submission alignment, Giorgi's explicitly owned slice of this requirements document is the AI-writing-assistant capability area, the AI-related non-functional requirements, and the AI workflow user stories.
+
+## Table of Contents
+
+1. [1.1 Stakeholder Analysis](#11-stakeholder-analysis)
+2. [1.2 Functional Requirements](#12-functional-requirements)
+3. [1.3 Non-Functional Requirements](#13-non-functional-requirements)
+4. [1.4 User Stories and Scenarios](#14-user-stories-and-scenarios)
+5. [1.5 Requirements Traceability Matrix](#15-requirements-traceability-matrix)
+
+## Submission Alignment Note
+
+This file is intentionally the design/requirements baseline, not a shipped-feature checklist. Use it for "what the system was meant to satisfy," then use [TASKS.md](./TASKS.md) and [DEVIATIONS.md](./DEVIATIONS.md) for "what the repo actually ships on April 19, 2026."
+
 ## 1.1 Stakeholder Analysis
 
 ### Stakeholder 1: Organization Administrators / Workspace Owners

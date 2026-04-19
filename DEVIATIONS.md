@@ -1,106 +1,245 @@
-# DEVIATIONS.md
+# Assignment 2 Deviations
 
-What actually ships versus what the Part 1 / Part 2 design documents describe, and why. This file is organised by ownership: Percy owns the backend/infrastructure section below; CDuongg and Giorgi fill in the frontend and AI sections respectively.
+## Abstract
 
-> Scope of this document: **backend + infra only**. Frontend UI and AI-provider specifics are captured by their owners in separate sections of this file.
+This file logs the meaningful differences between the Part 1 / Part 2 design baseline and the shipped Assignment 2 workspace as inspected on April 19, 2026. Ownership is explicit: Percy covers backend and infrastructure, CDuongg covers frontend and collaboration UX, and Giorgi covers AI implementation and late-stage AI-related hardening.
 
----
+## Table of Contents
 
-## Backend & infrastructure — Percy
+1. [Backend and Infrastructure](#backend-and-infrastructure)
+2. [Frontend and Collaboration UX](#frontend-and-collaboration-ux)
+3. [AI Implementation](#ai-implementation)
 
-### 1. Single-process backend (no separate AI worker)
+## Backend and Infrastructure
 
-**Part 2 design:** AI jobs run in a dedicated worker service with an async job queue (Celery/RQ/similar).
-**Shipped:** AI jobs run inline in the FastAPI process via `app/services/ai/ai_service.py`. The request is held until the provider call completes, then the response returns synchronously with an `interaction_id`.
-**Reason:** PoC scope. A single process keeps infra overhead minimal (no broker, no worker containers, no DLQ tuning). Splitting the AI worker into a separate service is a straightforward follow-up — the `ai_service.run_ai_job()` entry point is already the seam.
-**Impact:** Long AI jobs block a request slot; no retry logic; no backpressure beyond slowapi rate limiting.
+### 1. Single FastAPI process instead of a separate AI worker
+
+**Design baseline:** Part 2 described AI orchestration as a separable asynchronous service with queue-like behavior.
+
+**Shipped:** AI jobs run inside the FastAPI application process. The streaming path uses SSE and in-process task management rather than a broker/worker pair.
+
+**Reason:** This keeps the PoC easy to run and grade without Redis, Celery, or a second Python service.
+
+**Impact:** Long-running AI work still shares backend capacity with the REST API. This is acceptable for PoC scale but not a production isolation strategy.
+
+**Classification:** PoC compromise.
 
 ### 2. SQLite instead of PostgreSQL
 
-**Part 2 design:** PostgreSQL with JSONB columns for document content.
-**Shipped:** SQLite via `aiosqlite`. JSONB columns are stored as SQLite JSON (`sqlalchemy.JSON`).
-**Reason:** Zero-setup local dev; tests run without a DB service; the assignment grader can clone and run without provisioning Postgres.
-**Impact:** No real concurrent writers; `SELECT ... FOR UPDATE` not exercised; JSONB query operators unavailable (we only do full-column equality/null). Migration to Postgres is mostly a `DATABASE_URL` change plus type review for `JSON` vs `JSONB`.
+**Design baseline:** Part 2 assumed PostgreSQL as the primary durable store.
 
-### 3. JWT stateless auth without refresh-token rotation
+**Shipped:** Root `.env.example` defaults to SQLite via `sqlite+aiosqlite:///./collab_editor.db`.
 
-**Part 2 design:** Short-lived access tokens + refresh tokens with rotation and revocation list.
-**Shipped (PR #7):** 15-min access tokens, 7-day refresh tokens distinguished by a `type` claim. Refresh tokens are **not** rotated on exchange, and there is no revocation store.
-**Reason:** PoC skip — rotation + revocation requires persistent state and key rolling that is disproportionate for a grade-able PoC. The `type` claim discriminator means adding rotation later is additive (store `jti` in Redis, reject on reuse).
-**Impact:** A leaked refresh token is valid for its full 7 days; there is no server-side "log out everywhere". Acceptable for a PoC; flagged for production.
+**Reason:** Zero-setup local development and simpler grading. The backend and tests run without provisioning a separate database service.
 
-### 4. WebSocket: single-process, no Redis pub/sub
+**Impact:** The system does not exercise production-grade concurrency or PostgreSQL-specific features such as JSONB semantics.
 
-**Part 2 design:** WebSocket tier scales horizontally via Redis pub/sub fanout; sticky sessions optional.
-**Shipped:** In-memory `_rooms: dict[document_id, Room]` in `realtime/websocket.py`. A single uvicorn process is the hard scaling limit.
-**Reason:** PoC driver #5 (horizontal scale) was explicitly lower-priority in Part 2.
-**Impact:** Multi-instance deployment requires Redis pub/sub fan-out and an election/lock for "who owns the authoritative `pycrdt.Doc` for doc X". Not done.
+**Classification:** Improvement for local DX, compromise for scale realism.
 
-### 5. Permission surface — document-scoped, not workspace-seeded
+### 3. Refresh tokens exist, but there is no rotation or revocation store
 
-**Part 2 design:** Users join a workspace, workspace membership rolls up to team-level and document-level grants.
-**Shipped:** `DocumentShare` is the fully-enforced layer. `WorkspaceMember` rows exist in the schema, and PR #7 checks them for the AI-policy endpoint, but **nothing in the running system seeds workspace memberships**. A freshly-registered user has no workspace affiliation; they can only reach documents they personally created or were explicitly `DocumentShare`-granted.
-**Reason:** Sharing covers every day-to-day flow in the PoC. Workspace seeding is a self-contained follow-up (registration → auto-create-personal-workspace + `WorkspaceMember(owner)` row).
-**Impact:** `PATCH /api/workspaces/{id}/ai-policy` returns 403 for everybody until a member row is seeded. That is the correct safe default — it's documented here so the grader doesn't think it's a bug.
+**Design baseline:** Short-lived access tokens plus refresh-token rotation and server-side invalidation.
 
-### 6. Permission audit — what was fixed vs. what's still loose
+**Shipped:** Access/refresh token separation is implemented, but the same refresh token remains valid until expiry and there is no revocation list.
 
-**Fixed in PR #7:**
-- `POST /api/documents/{id}/ai-jobs` — editor required (was: any authenticated user could spend quota against any doc).
-- `GET /api/ai-jobs/{id}` and `/suggestion` — viewer required.
-- `POST /api/ai-jobs/{id}/apply` / `/reject` — editor required.
-- `GET /api/documents/{id}/versions` — viewer required.
-- `POST /api/documents/{id}/versions/{vid}/restore` — editor required.
-- `PATCH /api/workspaces/{id}/ai-policy` — workspace owner/admin required.
+**Reason:** Rotation and revocation would add persistent token-state management that was out of scope for the grading path.
 
-**Still loose (known, accepted for PoC):**
-- No rate limiting on non-AI endpoints.
-- No CSRF tokens — the API is stateless bearer-token only; browser cookies are not used for auth.
-- No per-share `allow_ai` enforcement — the flag is stored but the AI job creation path doesn't yet read it.
+**Impact:** A leaked refresh token remains usable until it expires. This is explicitly acceptable only for the PoC threat model.
 
-### 7. Reconnect / offline — server-side scope only
+**Classification:** PoC compromise.
 
-**Part 2 design:** Target <500 ms propagation, graceful reconnect with state reconciliation, offline edit queue with sync-on-reconnect.
-**Shipped server-side (PR #8):**
-- `presence_leave` JSON control frame emitted on disconnect so peers prune awareness without waiting for Yjs timeout.
-- `asyncio.wait_for` idle timeout (60 s default) closes silent connections cleanly.
-- Explicit close codes (4401 auth, 4403 forbidden, 1000 normal) so the client can distinguish reconnect-worthy from terminal errors.
-- Viewer edit attempts receive a `{"type":"error","code":"READ_ONLY"}` JSON frame instead of being silently dropped.
-- Periodic flush (every 50 applied updates) so a server crash mid-session doesn't drop in-flight edits.
+### 4. Real-time collaboration is single-process and in-memory
 
-**Out of scope for backend:** offline edit queue, reconciliation UI, reconnect backoff — those are client concerns tracked by CDuongg under TASKS 2.3b.
+**Design baseline:** Horizontal scale via a shared pub/sub layer and multi-instance realtime nodes.
 
-### 8. Share-by-link (Bonus B3)
+**Shipped:** WebSocket rooms live in an in-memory room registry in `backend/app/realtime/websocket.py`. There is no Redis fan-out or cross-node state sharing.
 
-**Shipped (PR #8):**
-- Owner creates a link via `POST /api/documents/{id}/share-links` — `secrets.token_urlsafe(32)` returned exactly once; server stores only the sha256 hash.
-- Owner revokes via `DELETE /api/documents/{id}/share-links/{share_id}`.
-- Anyone authenticated redeems via `POST /api/shares/redeem {token}` — creates a `USER` share row for the caller; downstream checks reuse the existing `check_document_access` path.
-- Redemption is idempotent; revoked/expired/invalid tokens return a generic 404 so token existence doesn't leak.
+**Reason:** The assignment demo workload does not require multi-instance deployment.
 
-**Deviation:** the spec allowed link-holders to access a document without being registered. Shipped version requires authentication first, then redeem. This is a deliberate simplification — anonymous access would need a separate "link session" token type and new auth paths in every endpoint.
+**Impact:** The collaboration server is bounded to one process. A real deployment would need shared presence/update fan-out plus document ownership coordination.
 
-### 9. Committed `.env` file
+**Classification:** Known PoC limit.
 
-**Issue:** `.env` is tracked in git with dev-only values (secret key `change-me-in-production`).
-**Status:** Known, not fixed in this sprint. The secret is obviously a non-secret placeholder; production deployment would override via real env vars. `.env` will be moved to `.gitignore` as a follow-up.
+### 5. Share-by-link requires authentication before redemption
 
-### 10. No CI pipeline
+**Design baseline:** Anonymous link-holders could potentially reach a document directly through a share link.
 
-**Status:** No GitHub Actions / equivalent. The `Makefile` `test-cov` target is the canonical "does it still work?" check and is intended to be run locally before every PR. Wiring to GitHub Actions is a one-file follow-up.
+**Shipped:** Link redemption is authenticated. The token is redeemed into a normal `DocumentShare` row for the current user.
 
-### 11. No ollama service in docker-compose
+**Reason:** This reuses the existing auth and permission model and avoids introducing anonymous session tokens into every downstream route.
 
-**Part 2 design:** Bundled local LLM for offline/airgap demos.
-**Shipped:** `docker-compose.yml` only runs backend + frontend; ollama is expected to be running on the host (`host.docker.internal:11434`) or accessed via a cloud provider API key.
-**Reason:** The ollama image is multi-GB and pulls a model on first start — disproportionate for the PoC grading path. Users who want it can run `ollama serve` on the host.
+**Impact:** The UX is slightly stricter than the original idea, but authorization is simpler and safer.
 
----
+**Classification:** Intentional security simplification.
 
-## Frontend — CDuongg
+### 6. Workspace AI policy exists, but workspace membership seeding is incomplete
 
-_[Owner: CDuongg. Covers frontend rich-text editor, collaboration client, AI UI, testing — see TASKS.md §91-103.]_
+**Design baseline:** Workspace membership would be part of the normal onboarding path and AI policy would be actively enforced from that seed data.
 
-## AI — Giorgi
+**Shipped:** `WorkspaceMember` data and the AI-policy endpoint exist, but registration does not yet auto-seed a working membership graph for ordinary users.
 
-_[Owner: Giorgi. Covers AI streaming implementation, prompt externalisation, provider abstraction, interaction history — see TASKS.md §105-115.]_
+**Reason:** Document-level sharing covered the main grader-visible flows first.
+
+**Impact:** Workspace AI policy is more of an administrative scaffold than a fully exercised product flow in the current PoC.
+
+**Classification:** Partial implementation.
+
+### 7. Docker Compose does not include an Ollama service
+
+**Design baseline:** A bundled local AI provider was part of the aspirational all-in-one development story.
+
+**Shipped:** `docker-compose.yml` starts only `backend` and `frontend`. Ollama must run separately if it is the selected provider.
+
+**Reason:** Shipping a multi-GB model image was disproportionate for the assignment workflow.
+
+**Impact:** The root `.env.example` default `OLLAMA_BASE_URL=http://ollama:11434` must often be overridden in real local setups.
+
+**Classification:** PoC compromise.
+
+### 8. Local CI targets exist, but there is no hosted GitHub Actions pipeline
+
+**Design baseline:** The process expected PR evidence and automated quality checks, ideally in CI.
+
+**Shipped:** `make ci` exists locally, but there is no `.github/workflows/` pipeline in the repo.
+
+**Reason:** The team prioritized runnable local scripts over hosted CI wiring.
+
+**Impact:** Verification depends on local discipline rather than mandatory remote checks.
+
+**Classification:** Process compromise.
+
+## Frontend and Collaboration UX
+
+### 1. Offline editing is browser-local via IndexedDB, not a generalized cross-device queue
+
+**Design baseline:** Offline recovery was described functionally, without locking into a storage strategy.
+
+**Shipped:** The editor uses `y-indexeddb` to cache Yjs state in the current browser profile.
+
+**Reason:** This gives low-friction offline persistence and reconnect merge behavior with very little custom code.
+
+**Impact:** Offline drafts survive reloads in the same browser, but this is not a portable offline queue that can move across devices or profiles.
+
+**Classification:** Good PoC implementation with bounded scope.
+
+### 2. Presence and remote cursors use lightweight Yjs awareness UX
+
+**Design baseline:** Presence would remain readable even in crowded collaboration sessions.
+
+**Shipped:** Presence chips show up to four collaborators plus an overflow count, and remote cursors use custom awareness builders and CSS labels.
+
+**Reason:** The goal was to satisfy presence and cursor visibility requirements without building a separate crowded-session design system.
+
+**Impact:** The current UI is strong for small-group collaboration but would need richer crowd handling for larger rooms.
+
+**Classification:** PoC simplification.
+
+### 3. Full-document AI apply is blocked for richly formatted documents
+
+**Design baseline:** AI suggestions could be accepted as document mutations while preserving editor trust.
+
+**Shipped:** The editor refuses full-document AI apply when rich formatting is present; selection-based apply is the safe path.
+
+**Reason:** Converting an arbitrary formatted ProseMirror document to plain text and back would risk destructive formatting loss.
+
+**Impact:** The shipped UX prefers correctness over convenience: full-document apply works only when the document is effectively plain text.
+
+**Classification:** Intentional safety restriction.
+
+### 4. Partial AI acceptance is composed on the client
+
+**Design baseline:** Partial acceptance was described as a structured, revision-aware suggestion operation.
+
+**Shipped:** The AI panel computes diff blocks client-side, lets the user choose blocks, applies the composed text in the editor, and then records the selected block ids through `/apply`.
+
+**Reason:** This avoided building a server-side ProseMirror patch engine for the assignment.
+
+**Impact:** The visible feature is present, but the backend records the choice rather than reconstructing the document delta itself.
+
+**Classification:** Useful feature compromise.
+
+### 5. The e2e path is a focused Playwright scenario, not a full regression suite
+
+**Design baseline:** End-to-end testing was listed as a bonus capability.
+
+**Shipped:** `frontend/tests/e2e/login-edit-ai-accept.spec.ts` covers register/login, edit, AI streaming, accept, save, and reload.
+
+**Reason:** The team implemented one representative high-value scenario rather than a broad browser suite.
+
+**Impact:** The repo contains bonus evidence, but e2e coverage is narrow and is not wired into `make ci`.
+
+**Classification:** Partial bonus implementation.
+
+## AI Implementation
+
+### 1. Streaming uses SSE from the API service, not a separate queue-backed worker
+
+**Design baseline:** Part 2 allowed for asynchronous AI handling with stronger service separation.
+
+**Shipped:** `/api/documents/{id}/ai-jobs/stream` streams `job`, `delta`, `suggestion`, and `status` events directly from FastAPI.
+
+**Reason:** SSE is simpler than a separate orchestration runtime and still satisfies the assignment's streaming requirement.
+
+**Impact:** The streamed UX is correct, but AI throughput and API isolation are still bounded by the main backend process.
+
+**Classification:** Pragmatic PoC choice.
+
+### 2. Prompt templates are externalized to JSON plus Python rendering, not a database-backed prompt registry
+
+**Design baseline:** Prompt templates should be configurable and versioned.
+
+**Shipped:** Prompts live in `backend/app/services/ai/prompts/templates.json` and are rendered by `templates.py`, with a version string stored in history.
+
+**Reason:** This makes prompts reviewable, centralized, and versioned without adding an admin UI or database configuration layer.
+
+**Impact:** Template changes still require a code change and redeploy, but prompt sprawl in route handlers was avoided.
+
+**Classification:** Improvement over hardcoded inline prompts, but less dynamic than the target architecture.
+
+### 3. Provider settings are controlled server-side only
+
+**Design baseline:** Part 2 discussed provider abstraction and flexible provider selection.
+
+**Shipped:** Provider choice and model overrides are supported, but API keys and base URLs come only from server configuration. Legacy client-side secret/base-url fields are ignored by the backend schema.
+
+**Reason:** Allowing raw provider secrets from the browser would be a security regression.
+
+**Impact:** Provider switching remains possible, but only through server-controlled configuration.
+
+**Classification:** Security improvement.
+
+### 4. Cancelled or failed jobs can persist partial output in history
+
+**Design baseline:** Earlier UX discussion implied that cancellation might simply discard the in-flight result.
+
+**Shipped:** If a provider already emitted text before cancellation or failure, the backend can persist that partial output with `partial_output_available=true`.
+
+**Reason:** This preserves auditability and makes debugging or manual recovery easier.
+
+**Impact:** The live panel clears the active suggestion on cancel, but history may still show the partial output later.
+
+**Classification:** Intentional behavioral deviation.
+
+### 5. AI history visibility is owner-only
+
+**Design baseline:** AI history was framed as something broader reviewers or admins might inspect.
+
+**Shipped:** `/api/documents/{id}/ai-history` requires owner access.
+
+**Reason:** This is the safest default while the broader review model remains under-specified.
+
+**Impact:** Editors and viewers can use AI, but only owners can browse the full AI history list.
+
+**Classification:** Conservative permission choice.
+
+### 6. Apply and reject record disposition, but document mutation is not transactional on the backend
+
+**Design baseline:** Suggestion application was described as a revision-aware server-side flow.
+
+**Shipped:** The backend records suggestion disposition, partial block ids, and audit events. The actual text replacement happens in the editor and then reaches persistence through the normal save/autosave path.
+
+**Reason:** Implementing safe ProseMirror-aware server-side patching was out of scope for the assignment.
+
+**Impact:** The user-facing feature works, but the final mutation path is client-driven rather than a single backend transaction.
+
+**Classification:** Cross-cutting PoC compromise.

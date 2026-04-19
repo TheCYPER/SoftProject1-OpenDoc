@@ -1,5 +1,22 @@
 # Part 2: System Architecture
 
+## Abstract
+
+This document records the target architecture for the collaborative editor and also clarifies the shipped PoC shape used for Assignment 2 submission. It should be read alongside [TASKS.md](./TASKS.md) and [DEVIATIONS.md](./DEVIATIONS.md). For ownership alignment, Giorgi's implementation scope in this architectural model centers on AC-07 AI Orchestration Service, prompt handling, streaming/history behavior, and the AI/editor contract that surfaces in the frontend.
+
+## Table of Contents
+
+1. [2.1 Architectural Drivers](#21-architectural-drivers)
+2. [Scope Clarification: Target Architecture vs Current PoC](#scope-clarification-target-architecture-vs-current-poc)
+3. [2.2 System Design using the C4 Model](#22-system-design-using-the-c4-model)
+4. [2.3 Code Structure and Repository Organization](#23-code-structure--repository-organization)
+5. [2.4 Data Model](#24-data-model)
+6. [2.5 Architecture Decision Records (ADRs)](#25-architecture-decision-records-adrs)
+
+## Submission Alignment Note
+
+Unless a section says otherwise, this document still describes the intended architecture, not a guarantee that every mechanism shipped exactly as designed. The authoritative shipped-status view is [TASKS.md](./TASKS.md), and the authoritative design-vs-implementation gap log is [DEVIATIONS.md](./DEVIATIONS.md).
+
 ## 2.1 Architectural Drivers
 
 The architecture is driven first by the collaboration experience and only second by implementation convenience. That ranking matters: if the top priority were “ship the simplest CRUD app quickly,” a single synchronous backend with periodic saves would be enough. That would not satisfy the requirements in Part 1, especially FR-COL-01, FR-COL-03, FR-COL-04, NFR-LAT-01, NFR-AVAIL-03, and the AI-review workflows in FR-AI-02 and FR-AI-03.
@@ -20,7 +37,7 @@ Two different rankings would produce a different design. For example, if cost mi
 This document intentionally describes both:
 
 * the **target architecture** the team aims to reach during the semester, and
-* the **current PoC scope** implemented for Assignment 1 Part 4.
+* the **current PoC scope** implemented in the Assignment 2 workspace inspected on April 19, 2026.
 
 To avoid ambiguity during grading, the default reading rule is:
 
@@ -29,12 +46,12 @@ To avoid ambiguity during grading, the default reading rule is:
 
 | Area | Target architecture (design intent) | Current PoC scope (implemented now) |
 | --- | --- | --- |
-| AI execution model | Asynchronous job lifecycle with queue-like states, event publication, and non-blocking UX | AI request is handled within API request flow; status is persisted, but no separate worker/queue runtime |
-| AI policy & role gating | Workspace policy + role-based feature controls enforced for invocation and outcomes | Basic policy data model and endpoint exist; enforcement is partial and not complete across all AI paths |
-| Suggestion application model | Suggestion acceptance updates document state with full revision-aware flow | Suggestion records and dispositions are persisted; full end-to-end revision mutation flow is limited |
-| Permissions surface | Uniform least-privilege checks across all sensitive routes | Core document/share permissions are present; some endpoints remain PoC-hardening candidates |
-| Collaboration resiliency | Full reconnect semantics with explicit stale/rebase UX for AI+collaboration interactions | Core Yjs sync and reconnect are functional; advanced stale/rebase UX is partially implemented |
-| Scalability strategy | Horizontally scalable API/realtime services with shared pub/sub layer | Single-process deployment profile suitable for PoC/demo scale |
+| AI execution model | Asynchronous job lifecycle with queue-like states, event publication, and non-blocking UX | AI jobs run inside the FastAPI process; the streaming path uses SSE with persisted status/history, but there is no separate broker/worker runtime |
+| AI policy & role gating | Workspace policy + role-based feature controls enforced for invocation and outcomes | Document-role checks are enforced on AI routes, and share-level `allow_ai` is checked; workspace AI-policy data exists, but workspace-member seeding is still incomplete |
+| Suggestion application model | Suggestion acceptance updates document state with full revision-aware flow | Suggestion acceptance, rejection, undo-oriented UX, and partial-accept selection shipped; the backend records disposition and selected blocks, while the editor applies the text locally and persists it through save/autosave |
+| Permissions surface | Uniform least-privilege checks across all sensitive routes | Core document, version, sharing, audit, and AI routes are server-enforced; broader production controls such as token revocation stores and full hosted CI are still deferred |
+| Collaboration resiliency | Full reconnect semantics with explicit stale/rebase UX for AI+collaboration interactions | Yjs sync, reconnect backoff, offline persistence, explicit WebSocket close codes, revoke enforcement, and remote cursors are shipped for PoC/demo scale |
+| Scalability strategy | Horizontally scalable API/realtime services with shared pub/sub layer | Single-process backend plus in-memory WebSocket rooms remain the hard scale limit |
 
 This clarification is intended to keep architectural depth while making the current implementation boundary explicit and auditable.
 

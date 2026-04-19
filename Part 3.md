@@ -1,268 +1,176 @@
-# Part 3: Project Management & Team Collaboration
+# Part 3: Project Management and Team Collaboration
 
-## 3.1 Team Structure & Ownership
+## Abstract
+
+This document records how the Assignment 2 implementation was actually organized and evidenced in the repository. It supersedes the earlier two-person narrative. The shipped workspace is a three-person effort: Percy handled backend/infrastructure and most submission plumbing, CDuongg handled the editor/collaboration frontend and frontend testing, and Giorgi handled AI streaming/history/prompts plus the April 19 fork-local hardening branches. Dates and branch names below use the repository state inspected on April 19, 2026.
+
+## Table of Contents
+
+1. [Team Structure and Ownership](#team-structure-and-ownership)
+2. [Workflow and Repository Evidence](#workflow-and-repository-evidence)
+3. [Coordination Model](#coordination-model)
+4. [Risk Assessment](#risk-assessment)
+5. [Timeline and Milestones](#timeline-and-milestones)
+
+## 3.1 Team Structure and Ownership
 
 ### Team Members and Roles
 
-| Member | Role | Ownership Areas |
-|--------|------|-----------------|
-| **Percy** | Project Lead / Backend & Infrastructure | Backend API (FastAPI), database models & migrations, AI service layer, Docker/DevOps, CI configuration, repo management |
-| **CDuongg** | Frontend & Collaboration Lead | React UI components, TipTap rich-text editor, Yjs CRDT integration, real-time presence, UX refinement |
+| Member | Role | Ownership areas |
+| --- | --- | --- |
+| Percy | Backend and infrastructure lead | Auth, permissions, shares, versions, export, backend tests, Makefile, run scripts, root docs |
+| CDuongg | Frontend and collaboration lead | React UI, Tiptap editor, Yjs client integration, offline/reconnect UX, presence UI, Vitest coverage |
+| Giorgi | AI and submission-alignment lead | AI streaming/history/prompt templates, partial acceptance, fork-local hardening branches, AI documentation alignment |
 
-### Codebase Ownership Map
+### Ownership Map
 
-```
-backend/
-  app/
-    main.py, config.py, database.py    → Percy
-    models/                             → Percy
-    schemas/                            → Percy
-    api/                                → Percy
-    services/ai/                        → Percy
-    realtime/websocket.py               → Percy (initial), CDuongg (Yjs upgrade)
-  alembic/                              → Percy
-  Dockerfile, requirements.txt          → Percy
+| Area | Primary owner | Supporting owner(s) |
+| --- | --- | --- |
+| `backend/app/api/users.py`, auth flow, refresh tokens | Percy | CDuongg for frontend consumption |
+| `backend/app/api/shares.py`, permissions, share-links | Percy | Giorgi for late-stage hardening |
+| `backend/app/realtime/websocket.py` server lifecycle | Percy | Giorgi for bonus/hardening work |
+| `frontend/src/pages/EditorPage.tsx` | CDuongg | Giorgi for AI-integrated editor behavior |
+| `frontend/src/lib/collaboration.ts` and presence UX | CDuongg | Giorgi for cursor/revoke hardening |
+| `backend/app/api/ai_jobs.py`, `backend/app/services/ai/*` | Giorgi | Percy for route/auth review |
+| `frontend/src/components/AIPanel.tsx` | Giorgi + CDuongg | Shared AI contract work |
+| Root `README.md`, `TASKS.md`, `DEVIATIONS.md`, report alignment | Percy + Giorgi | CDuongg for frontend status and evidence |
 
-frontend/
-  src/
-    components/EditorPage.tsx           → CDuongg
-    components/AIPanel.tsx              → CDuongg (UI), Percy (API contract)
-    components/PresenceBar.tsx          → CDuongg
-    components/ShareModal.tsx           → CDuongg
-    lib/collaboration.ts                → CDuongg
-    api/client.ts                       → Percy (initial), CDuongg (extensions)
+### Giorgi Scope for Assignment 2
 
-docker-compose.yml, .env.example        → Percy
-```
+Giorgi's scope is not just "AI in general"; it is evidenced by concrete branches and files:
 
-### Cross-Cutting Feature Handling
+- `feat/pr19-tooling-ci-baseline`: fresh-clone bootstrap and local CI targets.
+- `feat/pr20-ai-streaming-history`: backend SSE streaming, AI status lifecycle, prompt version capture, AI history endpoint.
+- `feat/pr21-collab-hardening-bonuses`: remote cursors and collaboration hardening.
+- `feat/pr22-backend-integrity`: sharing/collaboration state fixes.
+- `feat/pr23-partial-acceptance`: partial AI suggestion acceptance in the editor.
 
-Several features span multiple ownership areas. We handle these through explicit coordination:
+Representative commits: `fa0ee0a`, `3498345`, `3237973`, `ff1806b`.
 
-- **AI Assistant**: Percy owns the backend AI service layer and provider abstraction; CDuongg owns the frontend `AIPanel.tsx` and text-selection UX. The API contract (defined in Part 2, Section 2.2) serves as the interface between the two. Changes to the AI job schema require both members to review the PR.
-- **Real-time Collaboration**: Percy built the initial WebSocket relay; CDuongg replaced it with Yjs CRDT sync and y-prosemirror bindings. The WebSocket message protocol is documented in `backend/app/realtime/websocket.py` and any changes require joint review.
-- **Document Sharing & Permissions**: Percy owns the backend `permissions.py` service and share API routes; CDuongg enforces read-only constraints in the editor UI. PR #4 (`fix-viewer-readonly-enforcement`) is an example of this coordination — CDuongg implemented the frontend enforcement after Percy defined the permission model.
-
-### Technical Disagreement Resolution
-
-When team members disagree on a technical choice, we follow this process:
-
-1. **Discussion in the PR**: Both members state their position with concrete reasoning (performance data, complexity trade-offs, alignment with Part 2 architecture).
-2. **Prototype if ambiguous**: If the trade-off is unclear, the proposer builds a small spike (time-boxed to 2 hours) to demonstrate feasibility.
-3. **Owner decides within their domain**: The member who owns the affected area has final say, provided the decision does not contradict the architectural drivers defined in Part 2 (e.g., low-latency collaboration, failure isolation).
-4. **Escalate if cross-cutting**: For decisions that affect both frontend and backend (e.g., changing the WebSocket protocol), both members must agree. If consensus cannot be reached, we default to the simpler solution that requires fewer changes.
-
----
-
-## 3.2 Development Workflow
+## 3.2 Workflow and Repository Evidence
 
 ### Branching Strategy
 
-We use a **feature-branch model** with `main` as the single production-ready branch.
+The team used a feature-branch workflow with `main` as the integration branch.
 
-| Branch Type | Naming Convention | Example |
-|-------------|-------------------|---------|
-| Feature | `feat/<kebab-case-description>` | `feat/realtime-collaboration` |
-| Bug Fix | `fix/<kebab-case-description>` | `fix-viewer-readonly-enforcement` |
-| Documentation | `docs/<description>` | `docs/part3-project-management` |
+| Branch type | Naming pattern | Example |
+| --- | --- | --- |
+| Feature | `feat/<description>` | `feat/pr20-ai-streaming-history` |
+| Fix | `fix/<description>` or review branch | `fix-viewer-readonly-enforcement`, `review/pr-19-revoke-enforcement` |
+| Docs | `docs/<description>` | `docs/update-part1-part2-implementation` |
 
-**Merge policy:**
-- All feature and fix branches merge into `main` via **GitHub Pull Request**.
-- PRs require at least **one approving review** from the other team member before merge.
-- We use **merge commits** (not squash or rebase) to preserve the full commit history of each feature branch.
-- Branch is deleted after merge.
+Working rules:
 
-**Evidence from our repo:** PRs #1–#4 all follow this model — each feature branch was reviewed, approved, and merged via GitHub PR.
+- No direct feature work on `main`.
+- Origin-hosted work is visible as GitHub PR merges #1-18.
+- Fork-local Assignment 2 completion work on April 19, 2026 is evidenced by local branches `feat/pr19-*` through `feat/pr23-*`.
+- At the time of inspection, `main` is the integration branch and the local `feat/pr24-e2e-tests` branch contains the E2E/doc pass on top of it.
 
-### Code Review Process
+### Review Policy
 
-| Aspect | Policy |
-|--------|--------|
-| **Who reviews** | The team member who does not own the changed area. Cross-cutting PRs require both members to review. |
-| **Review criteria** | (1) Code correctness and no regressions, (2) adherence to Part 2 API contracts and data model, (3) no hardcoded secrets or security issues, (4) tests included for new functionality |
-| **Turnaround time** | Reviews completed within 24 hours of PR creation |
-| **Approval threshold** | 1 approval required (since the team has 2 members) |
+| Area | Review expectation |
+| --- | --- |
+| Backend-only change | Reviewed by a non-owner before merge where practical |
+| Frontend-only change | Reviewed by a non-owner before merge where practical |
+| Cross-cutting AI/editor contract | Giorgi and CDuongg coordinate together; Percy reviews permission/security impact |
+| Docs/submission alignment | Percy and Giorgi update, with frontend status checked against CDuongg-owned code |
 
-**Review checklist (used for each PR):**
-- [ ] Does the code match the API contract from Part 2?
-- [ ] Are there tests covering the new/changed behavior?
-- [ ] Does the code handle errors appropriately?
-- [ ] Are there any hardcoded credentials or secrets?
-- [ ] Does it break any existing functionality? (run `pytest app/tests/ -v`)
+### Repository Evidence
 
-### Issue Tracking and Task Assignment
+| Date | Evidence | Owner(s) | Outcome |
+| --- | --- | --- | --- |
+| March 25, 2026 | PR #1 and PR #2 | Percy + CDuongg | Rich-text editor baseline lands |
+| March 31, 2026 | PR #3 `origin/feat/realtime-collaboration` | CDuongg | Yjs real-time collaboration shipped |
+| April 1, 2026 | PR #4 `origin/fix-viewer-readonly-enforcement` | CDuongg | Viewer editing blocked in UI and realtime path |
+| April 15, 2026 | PRs #7-10 | Percy | Refresh tokens, permission audit, share-links, backend tests, Makefile/run.sh, infra/docs |
+| April 16-18, 2026 | PRs #12-18 | CDuongg | Refresh interceptor, autosave, headings/code blocks, AI comparison UX, reconnect hardening, frontend tests, offline editing |
+| April 19, 2026 | `feat/pr19-tooling-ci-baseline` | Giorgi | Local CI/bootstrap pass for fresh clones |
+| April 19, 2026 | `feat/pr20-ai-streaming-history` | Giorgi | AI streaming/history work lands |
+| April 19, 2026 | `feat/pr21-collab-hardening-bonuses` | Giorgi | Remote cursors and hardening land |
+| April 19, 2026 | `feat/pr22-backend-integrity` | Giorgi | Sharing/collaboration fixes land |
+| April 19, 2026 | `feat/pr23-partial-acceptance` merged into local `main` | Giorgi | Partial AI acceptance lands in local `main` |
 
-- **GitHub Issues** are used to define work items. Each issue has a clear title, description, and assignee.
-- **GitHub Pull Requests** link to issues and serve as the primary record of what was implemented and why.
-- Work is broken into **small, focused PRs** — each PR addresses a single feature or fix (e.g., PR #1 for TipTap editor, PR #3 for Yjs sync, PR #4 for read-only enforcement).
-- We track progress informally using the PR list on GitHub: open PRs = in progress, merged PRs = done.
+### Contribution Evidence
 
-### Communication
+`git shortlog -sn --all` on April 19, 2026:
 
-| Tool | Purpose |
-|------|---------|
-| **WeChat** | Day-to-day communication, quick questions, coordination |
-| **GitHub PR comments** | Technical discussion tied to specific code changes |
-| **GitHub Issues** | Task definition and assignment |
-| **Part 1–3 documents** | Architectural decisions and project-level agreements (checked into the repo) |
+- Percy: 39 commits
+- CDuongg: 16 commits
+- Giorgi31: 11 commits
 
-**Decision documentation:** Technical decisions that affect the architecture are documented in the Part 2 document or as comments in the relevant PR. This ensures decisions are not lost in chat messages and remain traceable to the code change that implements them.
+This matters because the assignment expects visible contribution from every team member, not a single final merge from one account.
 
----
+## 3.3 Coordination Model
 
-## 3.3 Development Methodology
+### Cross-Cutting Feature Areas
 
-### Chosen Methodology: Scrum-Inspired Iterative Development
+| Feature | Coordination model |
+| --- | --- |
+| Auth refresh | Percy exposes backend contract; CDuongg implements client refresh behavior |
+| Collaboration lifecycle | Percy owns server close codes/room behavior; CDuongg owns reconnect/offline UX; Giorgi hardens late-stage cursor/revoke behavior |
+| AI streaming | Giorgi owns backend AI stream and prompt/history work; CDuongg integrates the panel UX; Percy reviews route protection |
+| Partial suggestion acceptance | Giorgi implements the diff-block selection path; CDuongg ensures it works in the editor; Percy reviews audit/disposition semantics |
 
-We use a lightweight **Scrum-inspired** approach adapted for a two-person university team. We chose this because:
+### Decision Rules
 
-1. **Iterative delivery** lets us demonstrate working software at each milestone, which is critical for a PoC where requirements may evolve based on feedback.
-2. **Short sprints** (1 week) create natural checkpoints to reassess priorities and catch integration issues early.
-3. **Simplicity** — with only two team members, heavy process overhead (daily standups, retrospectives) would slow us down. We keep the ceremonies minimal.
-
-### Iteration Structure
-
-| Element | Details |
-|---------|---------|
-| **Sprint length** | 1 week (Monday–Sunday) |
-| **Planning** | Monday: review backlog, select items for the sprint, assign tasks |
-| **Check-in** | Mid-week sync via WeChat to flag blockers |
-| **Review** | Sunday: merge outstanding PRs, verify sprint goals |
-| **Retrospective** | Brief (15 min) discussion on what worked and what to adjust |
-
-### Backlog Prioritization
-
-We prioritize work using the **MoSCoW method**, aligned with the assignment requirements:
-
-| Priority | Examples |
-|----------|---------|
-| **Must Have** | Document CRUD, authentication, real-time collaboration, AI integration |
-| **Should Have** | Document sharing with permissions, version history, presence awareness |
-| **Could Have** | Workspace/team management, document export (PDF/Markdown), audit logging UI |
-| **Won't Have (this semester)** | Horizontal scaling, OAuth/SSO, offline-first sync, mobile app |
-
-### Handling Non-User-Visible Work
-
-Infrastructure, data modeling, and testing do not produce user-visible features, but they are essential. We handle them as follows:
-
-- **Infrastructure tasks** (Docker setup, Alembic migrations, CI) are treated as sprint items with the same priority as feature work. They are assigned to Percy and tracked via issues/PRs.
-- **Data model design** was completed upfront as part of Part 2 (ER diagram with 11 tables) and implemented in the first sprint. Changes to the schema require a migration (tracked as a PR).
-- **Tests** are required for every feature PR. The test is written as part of the same PR that introduces the feature, not as a separate task. This ensures test coverage grows with the codebase.
-
----
+1. The owner of the affected area proposes the implementation.
+2. If the change crosses backend/frontend or AI/editor boundaries, the supporting owner must review it.
+3. If there is no agreement quickly, the simpler implementation that preserves the Part 2 architectural drivers wins for the PoC.
+4. Any unresolved shipped-vs-design gap is recorded in `DEVIATIONS.md` instead of being hand-waved away.
 
 ## 3.4 Risk Assessment
 
-### Risk 1: AI Provider Latency and Cost Overruns
+### Risk 1: AI provider variability or outage
 
-| Aspect | Details |
-|--------|---------|
-| **Description** | External AI providers (OpenAI, Claude) introduce network latency (1–10 seconds per request) and per-token costs that could make the AI assistant impractical for frequent use during demos or testing. |
-| **Likelihood** | High — API latency is inherent; cost depends on usage volume. |
-| **Impact** | AI features become slow or unusable during live demo. Budget for API calls is exhausted before the semester ends. Testing becomes expensive. |
-| **Mitigation** | Default to **Ollama** (local, free inference) for development and demos. Use the `qwen2.5:8b` model which runs on consumer hardware. The abstract provider interface (`BaseProvider`) makes switching providers a config change, not a code change. |
-| **Contingency** | If Ollama is too slow on the demo machine, pre-record AI assistant interactions as part of the demo. If cloud API costs exceed budget, disable cloud providers and rely solely on Ollama. |
+| Aspect | Detail |
+| --- | --- |
+| Likelihood | High |
+| Impact | AI demo path becomes slow or unavailable |
+| Mitigation | Provider abstraction plus environment-based provider switching (`openai`, `groq`, `claude`, `ollama`) |
+| Current state | Streaming and history are resilient enough for provider errors, but there is still no separate worker tier |
 
-### Risk 2: Real-Time Collaboration Conflicts and Data Loss
+### Risk 2: Realtime permission drift
 
-| Aspect | Details |
-|--------|---------|
-| **Description** | Yjs CRDT sync over WebSocket may fail silently under poor network conditions, causing edits to be lost or documents to diverge between collaborators. |
-| **Likelihood** | Medium — Yjs is battle-tested, but our WebSocket relay is custom and has not been stress-tested. |
-| **Impact** | Users lose edits without warning. Document state becomes inconsistent across clients. Trust in the collaboration feature is destroyed. |
-| **Mitigation** | Yjs provides automatic conflict resolution via CRDT semantics (no manual merge needed). We persist Yjs document state to the database on every sync cycle. Frontend shows a connection-status indicator so users know when they are disconnected. |
-| **Contingency** | If CRDT sync proves unreliable, fall back to a **last-write-wins** model with explicit save buttons (degraded but functional). Document versioning provides a recovery path for lost edits. |
+| Aspect | Detail |
+| --- | --- |
+| Likelihood | Medium |
+| Impact | A revoked or downgraded user might keep an editor session longer than intended |
+| Mitigation | Review branch `review/pr-19-revoke-enforcement` plus later hardening branches on April 19 |
+| Current state | Safe enough for the PoC, with explicit close/error handling in the realtime path |
 
-### Risk 3: AI Provider API Breaking Changes or Downtime
+### Risk 3: Offline edits vs authoritative state
 
-| Aspect | Details |
-|--------|---------|
-| **Description** | OpenAI or Anthropic may change their API response format, deprecate models, or experience outages during critical development or demo periods. |
-| **Likelihood** | Medium — API changes are infrequent but have occurred historically (e.g., OpenAI deprecating `text-davinci-003`). |
-| **Impact** | AI features stop working entirely until the provider implementation is updated. If this happens during the demo, the AI assistant is non-functional. |
-| **Mitigation** | The **abstract provider interface** (`BaseProvider`) isolates each provider's API details. If one provider breaks, switching to another is a one-line config change (`AI_DEFAULT_PROVIDER=ollama`). Ollama runs locally and is not subject to external API changes. |
-| **Contingency** | Ship with Ollama as the default provider. Cloud providers are optional enhancements, not dependencies. |
+| Aspect | Detail |
+| --- | --- |
+| Likelihood | Medium |
+| Impact | Users may assume local offline edits are already persisted server-side |
+| Mitigation | IndexedDB caching, reconnect banners, reconnect toast, before-unload warning while offline |
+| Current state | Good browser-local recovery, but not a full cross-device offline sync system |
 
-### Risk 4: Frontend–Backend Integration Mismatches
+### Risk 4: Submission drift between code and docs
 
-| Aspect | Details |
-|--------|---------|
-| **Description** | With two team members working on frontend and backend independently, the API contract (request/response schemas, endpoint paths, error formats) may drift, causing integration failures when merging. |
-| **Likelihood** | Medium — we have documented API contracts in Part 2, but undocumented edge cases exist. |
-| **Impact** | Features that work in isolation break when integrated. Debugging integration issues consumes sprint time. |
-| **Mitigation** | API contracts are defined in Part 2, Section 2.2 and enforced by Pydantic schemas on the backend. The frontend `api/client.ts` uses TypeScript interfaces that mirror the Pydantic schemas. Cross-cutting PRs require both members to review. |
-| **Contingency** | If a mismatch is discovered late, the backend contract is treated as the source of truth (since Pydantic validates at runtime), and the frontend is updated to match. |
-
-### Risk 5: Team Member Availability and Knowledge Silos
-
-| Aspect | Details |
-|--------|---------|
-| **Description** | With only two team members, if one member is unavailable (illness, other coursework), the other cannot easily continue work in the absent member's ownership area due to unfamiliarity with the code. |
-| **Likelihood** | Medium — university schedules are unpredictable, especially near exam periods. |
-| **Impact** | Development stalls in one area (frontend or backend). Sprint goals are missed. The available member cannot fix bugs in the other's code. |
-| **Mitigation** | Both members review each other's PRs, which builds familiarity with the full codebase. Key architectural decisions are documented in Part 2 and CLAUDE.md. The project uses standard frameworks (FastAPI, React) with extensive community documentation, lowering the barrier to contributing outside one's primary area. |
-| **Contingency** | If one member is unavailable for more than 3 days, the other member takes ownership of the critical path and defers non-essential work. The `README.md` and `CLAUDE.md` provide enough context for either member to set up and run the full stack. |
-
-### Risk 6: WebSocket Scalability Bottleneck
-
-| Aspect | Details |
-|--------|---------|
-| **Description** | The current WebSocket implementation runs in a single FastAPI process. All active document sessions share one event loop. Under load (many concurrent editors), the server may become unresponsive. |
-| **Likelihood** | Low for PoC (expected <10 concurrent users), but high if the project were deployed to production. |
-| **Impact** | Editor becomes laggy or unresponsive. Real-time sync delays exceed the 100ms latency target from Part 1 requirements. |
-| **Mitigation** | For the PoC, the single-process model is acceptable. The architecture is designed to support horizontal scaling via Redis pub/sub (documented in Part 2) when needed. |
-| **Contingency** | If performance issues arise during demo, limit the number of concurrent editors per document to 3. Pre-test the demo scenario to identify the breaking point. |
-
----
+| Aspect | Detail |
+| --- | --- |
+| Likelihood | High before this doc pass |
+| Impact | The grader sees a stale team story, stale task status, and incomplete deviations |
+| Mitigation | Root docs rewritten against actual repo state, with branch/commit evidence and explicit ownership |
+| Current state | Closed by this documentation alignment pass |
 
 ## 3.5 Timeline and Milestones
 
-### Completed Milestones
+### Actual Milestones
 
-| Milestone | Target Date | Actual Date | Status |
-|-----------|-------------|-------------|--------|
-| **M0: Requirements & Architecture** | Mar 17 | Mar 17 | Done |
-| Part 1 (requirements) and Part 2 (architecture) documents submitted. | | | |
-| **M1: Backend API with Authentication** | Mar 20 | Mar 18 | Done |
-| *Acceptance criteria:* FastAPI serves document CRUD endpoints (`POST/GET/PATCH/DELETE /api/documents`), user registration and login return valid JWT tokens, 13+ backend tests pass via `pytest app/tests/ -v`. | | | |
-| **M2: Frontend Scaffold with Auth Flow** | Mar 20 | Mar 18 | Done |
-| *Acceptance criteria:* React app renders login page, authenticates against backend, displays document list after login, and navigates to editor view. | | | |
-| **M3: Rich Text Editor** | Mar 25 | Mar 25 | Done |
-| *Acceptance criteria:* TipTap editor replaces textarea, supports bold/italic/headings/lists, content persists to backend via API. Verified by PR #1 and #2 merge. | | | |
-| **M4: Real-Time Collaboration** | Mar 31 | Mar 31 | Done |
-| *Acceptance criteria:* Two browser tabs editing the same document see each other's changes in real-time via Yjs CRDT sync over WebSocket. Presence bar shows active collaborators. Verified by PR #3 merge. | | | |
-| **M5: Document Sharing & Permissions** | Apr 1 | Apr 1 | Done |
-| *Acceptance criteria:* Owner can share a document with another user as editor or viewer. Viewers cannot edit (enforced in both frontend and backend). Verified by PR #4 merge. | | | |
+| Milestone | Date | Evidence | Result |
+| --- | --- | --- | --- |
+| Requirements and architecture baseline | April 2, 2026 | `docs/update-part1-part2-implementation`, `docs/part3-project-management` | Part 1-3 report set established |
+| Rich-text editor baseline | March 25-31, 2026 | PRs #1-3 | Editor and realtime base shipped |
+| Permission-safe collaboration baseline | April 1, 2026 | PR #4 | Viewer enforcement shipped |
+| Backend hardening and tooling | April 15, 2026 | PRs #7-10 | Refresh tokens, shares, tests, docs/tooling shipped |
+| Frontend experience pass | April 16-18, 2026 | PRs #12-18 | Autosave, reconnect, tests, offline persistence, AI UX improvements |
+| AI streaming and final hardening | April 19, 2026 | Local branches `feat/pr19-*` to `feat/pr23-*` | AI streaming/history, remote cursors, integrity fixes, partial acceptance shipped |
 
-### Planned Milestones (Remainder of Semester)
+### Submission Readiness Summary
 
-| Milestone | Target Date | Status |
-|-----------|-------------|--------|
-| **M6: AI Permission Enforcement & Policy Controls** | Apr 8 | Planned |
-| *Acceptance criteria:* AI job endpoints enforce document role + workspace AI policy; unauthorized AI invocation returns `403` with clear reason; tests cover allowed and denied cases for owner/editor/viewer and policy-disabled scenarios. | | |
-| **M7: AI Suggestion Apply/Revert Consistency** | Apr 15 | Planned |
-| *Acceptance criteria:* Applying an AI suggestion updates document content and creates a corresponding version checkpoint; reject leaves document unchanged; stale suggestion handling is explicit; tests verify apply/reject/version behavior. | | |
-| **M8: Authorization Hardening for Versions and Audit-Sensitive Actions** | Apr 22 | Planned |
-| *Acceptance criteria:* Version list/restore and other sensitive routes are role-guarded server-side; unauthorized users cannot restore or view restricted history; regression tests added for privilege boundaries. | | |
-| **M9: Architecture-Document Alignment Pass** | Apr 29 | Planned |
-| *Acceptance criteria:* Part 1-3 documents are updated to clearly distinguish target architecture vs current PoC scope; API contracts and role definitions are consistent across sections; traceability matrix remains complete after updates. | | |
-| **M10: Final PoC Stabilization, Demo, and Submission Package** | May 6 | Planned |
-| *Acceptance criteria:* README and run instructions validated on a clean environment; backend test suite passes in CI/local runner; 3-minute demo recorded; final PDF includes editable-source diagram references and submission checklist is complete. | | |
-
-### Timeline Gantt (Weeks)
-
-```
-Week        Mar 17  Mar 24  Mar 31  Apr 07  Apr 14  Apr 21  Apr 28  May 05
-            ──────  ──────  ──────  ──────  ──────  ──────  ──────  ──────
-M0 Req/Arch ██
-M1 Backend  ██
-M2 Frontend ██
-M3 Editor           ██
-M4 Realtime         ████████
-M5 Sharing                  ██
-M6 AI Policy                        ██
-M7 AI Apply/Revert                         ██
-M8 Auth Hardening                               ██
-M9 Doc Alignment                                       ██
-M10 Finalize/Submit                                           ██
-```
+- The repo now tells a three-person story consistently.
+- Giorgi's AI work is explicit in both the branch evidence and the owned feature list.
+- Root docs, report parts, task matrix, and deviations are aligned to the same inspected repo state.

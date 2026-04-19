@@ -5,6 +5,7 @@ from app.config import settings
 from app.services.ai.prompts.templates import SYSTEM_PROMPT, PromptRender, render_prompt
 from app.services.ai.providers.base import AIProvider
 from app.services.ai.providers.claude import ClaudeProvider
+from app.services.ai.providers.mock import MockProvider
 from app.services.ai.providers.ollama import OllamaProvider
 from app.services.ai.providers.openai import OpenAIProvider
 
@@ -61,6 +62,15 @@ def _build_provider(provider_name: str) -> tuple[AIProvider, str]:
         return (
             OllamaProvider(base_url=settings.OLLAMA_BASE_URL, model=settings.OLLAMA_MODEL),
             settings.OLLAMA_MODEL,
+        )
+
+    if provider_name == "mock":
+        return (
+            MockProvider(
+                response_text=settings.MOCK_AI_RESPONSE,
+                chunk_size=settings.MOCK_AI_CHUNK_SIZE,
+            ),
+            "mock-response",
         )
 
     raise ValueError(f"Unknown AI provider: {provider_name}")
