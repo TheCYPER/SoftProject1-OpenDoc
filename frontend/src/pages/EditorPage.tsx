@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
+import { IndexeddbPersistence } from "y-indexeddb";
 import api from "../api/client";
 import AIPanel, { type UndoRequest } from "../components/AIPanel";
 import PresenceBar from "../components/PresenceBar";
@@ -112,6 +113,7 @@ export default function EditorPage() {
   const savedSnapshotRef = useRef(JSON.stringify(EMPTY_DOC));
   const ydocRef = useRef<Y.Doc | null>(null);
   const collaborationClientRef = useRef<CollaborationClient | null>(null);
+  const idbPersistenceRef = useRef<IndexeddbPersistence | null>(null);
   const activeDocumentIdRef = useRef<string | null>(null);
   const canEdit = doc?.role == null ? true : doc.role !== "viewer";
 
@@ -156,7 +158,10 @@ export default function EditorPage() {
     }
 
     // Create an empty Yjs document — the server will provide the authoritative
-    // state via the sync protocol when the WebSocket connects.
+    // state via the sync protocol when the WebSocket connects. IndexedDB
+    // persistence loads any locally-cached edits first (so offline changes
+    // survive a reload) and runs in parallel with the WebSocket sync — Yjs
+    // merges both providers' updates at the CRDT level.
     const ydoc = new Y.Doc();
     const yXmlFragment = ydoc.getXmlFragment("prosemirror");
 
@@ -164,6 +169,8 @@ export default function EditorPage() {
     ydocRef.current = ydoc;
 
     collaborationClientRef.current?.destroy();
+    idbPersistenceRef.current?.destroy();
+    idbPersistenceRef.current = new IndexeddbPersistence(`collab-doc-${documentId}`, ydoc);
 
     editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey]);
     editor.registerPlugin(ySyncPlugin(yXmlFragment));
@@ -199,6 +206,8 @@ export default function EditorPage() {
     return () => {
       collaborationClientRef.current?.destroy();
       collaborationClientRef.current = null;
+      idbPersistenceRef.current?.destroy();
+      idbPersistenceRef.current = null;
       setAwareness(null);
       editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey]);
       ydocRef.current?.destroy();
@@ -217,6 +226,28 @@ export default function EditorPage() {
     toast("You no longer have access to this document.", "error");
     navigate("/documents");
   }, [connectionStatus.state, navigate, toast]);
+
+  // Warn the user before closing the tab if we're offline (edits are cached
+  // in IndexedDB and will sync on reconnect — but if they switch browsers
+  // without coming back online, those edits never reach the server).
+  useEffect(() => {
+    if (connectionStatus.state !== "offline") return;
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [connectionStatus.state]);
+
+  // Friendly toast when we come back online after being offline.
+  const prevConnectionStateRef = useRef(connectionStatus.state);
+  useEffect(() => {
+    if (prevConnectionStateRef.current === "offline" && connectionStatus.state === "connected") {
+      toast("Reconnected — your edits are syncing.", "success");
+    }
+    prevConnectionStateRef.current = connectionStatus.state;
+  }, [connectionStatus.state, toast]);
 
   const loadDocument = async () => {
     try {
@@ -537,6 +568,29 @@ export default function EditorPage() {
         </div>
       </header>
 
+      {/* Offline / sustained-disconnect banner */}
+      {(connectionStatus.state === "offline" ||
+        (connectionStatus.state === "disconnected" && connectionStatus.attempt >= 2)) && (
+        <div className="editor-offline-banner" role="status">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <line x1="1" y1="1" x2="23" y2="23" />
+            <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" />
+            <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" />
+            <path d="M10.71 5.05A16 16 0 0 1 22.58 9" />
+            <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" />
+            <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+            <line x1="12" y1="20" x2="12.01" y2="20" />
+          </svg>
+          <div className="editor-offline-banner__text">
+            <strong>
+              {connectionStatus.state === "offline" ? "You're offline." : "Connection lost."}
+            </strong>
+            {" "}
+            Your edits are being saved locally and will sync when you reconnect.
+          </div>
+        </div>
+      )}
+
       {/* Editor body */}
       <div className="editor-body">
         <div className="editor-main">
@@ -760,6 +814,23 @@ export default function EditorPage() {
           font-size: var(--font-xs);
           height: auto;
           min-height: 0;
+        }
+        .editor-offline-banner {
+          display: flex;
+          align-items: center;
+          gap: var(--space-sm);
+          padding: var(--space-sm) var(--space-lg);
+          background: var(--color-warning-bg);
+          color: var(--color-warning);
+          border-bottom: 1px solid var(--color-warning);
+          font-size: var(--font-sm);
+        }
+        .editor-offline-banner__text {
+          flex: 1;
+          line-height: 1.4;
+        }
+        .editor-offline-banner strong {
+          color: var(--color-warning);
         }
         .editor-save-indicator {
           display: inline-flex;
