@@ -6,7 +6,7 @@
 #
 # All targets are phony; Make is just an entrypoint dispatcher, not a build graph.
 
-.PHONY: help install install-backend install-frontend ensure-backend ensure-frontend migrate backend frontend dev test test-cov frontend-test frontend-build ci docker docker-down clean
+.PHONY: help install install-backend install-frontend ensure-backend ensure-frontend ensure-tmux migrate backend frontend dev tmux-groq tmux-groq-stop test test-cov frontend-test frontend-build ci docker docker-down clean
 
 PYTHON      ?= python3
 BACKEND_DIR := backend
@@ -17,6 +17,10 @@ PIP         := $(PYBIN) -m pip
 PYTEST      := .venv/bin/python -m pytest
 UVICORN     := $(PYBIN) -m uvicorn
 ALEMBIC     := $(PYBIN) -m alembic
+TMUX        := tmux
+TMUX_BE_SESSION := opendoc-backend-groq
+TMUX_FE_SESSION := opendoc-frontend
+TMUX_GROQ_DB_URL := sqlite+aiosqlite:///./tmux_groq.sqlite3
 
 help:
 	@echo "Collaborative Document Editor — make targets"
@@ -26,6 +30,8 @@ help:
 	@echo "  make backend        start the backend only (foreground)"
 	@echo "  make frontend       start the frontend only (foreground)"
 	@echo "  make dev            start backend + frontend together (Ctrl-C stops both)"
+	@echo "  make tmux-groq      launch backend + frontend in two tmux sessions using Groq"
+	@echo "  make tmux-groq-stop stop the tmux-groq sessions"
 	@echo "  make test           run backend pytest suite"
 	@echo "  make test-cov       run backend tests with coverage summary"
 	@echo "  make frontend-test  run frontend vitest suite"
@@ -64,10 +70,16 @@ ensure-frontend:
 		exit 1; \
 	fi
 
+ensure-tmux:
+	@command -v $(TMUX) >/dev/null 2>&1 || { \
+		echo ">> tmux is not installed"; \
+		exit 1; \
+	}
+
 migrate: ensure-backend
 	@if [ -d "$(BACKEND_DIR)/alembic/versions" ] && find "$(BACKEND_DIR)/alembic/versions" -maxdepth 1 -type f ! -name '.*' -print -quit | grep -q .; then \
 		echo ">> applying alembic migrations"; \
-		PYTHONPATH="$(BACKEND_DIR)" $(ALEMBIC) -c $(BACKEND_DIR)/alembic.ini upgrade head; \
+		cd $(BACKEND_DIR) && set -a && [ -f ../.env ] && . ../.env; set +a; PYTHONPATH=. ../$(VENV)/bin/python -m alembic -c alembic.ini upgrade head; \
 	else \
 		echo ">> no alembic revisions found; initializing schema from metadata"; \
 		PYTHONPATH="$(BACKEND_DIR)" $(PYBIN) -c 'import asyncio; from app.database import init_db; asyncio.run(init_db())'; \
@@ -89,6 +101,28 @@ dev: ensure-backend ensure-frontend
 	FE_PID=$$!; \
 	trap 'kill $$BE_PID $$FE_PID 2>/dev/null; wait' INT TERM; \
 	wait
+
+tmux-groq: ensure-backend ensure-frontend ensure-tmux
+	@test -f .env || { \
+		echo ">> .env is missing; create it first (cp .env.example .env)"; \
+		exit 1; \
+	}
+	@$(TMUX) has-session -t "$(TMUX_BE_SESSION)" 2>/dev/null && $(TMUX) kill-session -t "$(TMUX_BE_SESSION)" || true
+	@$(TMUX) has-session -t "$(TMUX_FE_SESSION)" 2>/dev/null && $(TMUX) kill-session -t "$(TMUX_FE_SESSION)" || true
+	@$(TMUX) new-session -d -s "$(TMUX_BE_SESSION)" "bash -lc \"cd '$(CURDIR)/backend' && set -a && . ../.env && set +a && export AI_DEFAULT_PROVIDER=groq DATABASE_URL='$(TMUX_GROQ_DB_URL)' && .venv/bin/python -m alembic -c alembic.ini upgrade head && PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000\""
+	@$(TMUX) new-session -d -s "$(TMUX_FE_SESSION)" "bash -lc \"cd '$(CURDIR)/frontend' && export VITE_API_BASE=http://127.0.0.1:8000 && npm run dev -- --host 127.0.0.1 --port 5173\""
+	@echo ">> launched tmux sessions:"
+	@echo "   backend: $(TMUX_BE_SESSION)"
+	@echo "   frontend: $(TMUX_FE_SESSION)"
+	@echo "   database: backend/tmux_groq.sqlite3"
+	@echo ">> attach with:"
+	@echo "   tmux attach -t $(TMUX_BE_SESSION)"
+	@echo "   tmux attach -t $(TMUX_FE_SESSION)"
+
+tmux-groq-stop: ensure-tmux
+	@$(TMUX) has-session -t "$(TMUX_BE_SESSION)" 2>/dev/null && $(TMUX) kill-session -t "$(TMUX_BE_SESSION)" || true
+	@$(TMUX) has-session -t "$(TMUX_FE_SESSION)" 2>/dev/null && $(TMUX) kill-session -t "$(TMUX_FE_SESSION)" || true
+	@echo ">> stopped tmux sessions (if they existed)"
 
 test: ensure-backend
 	cd $(BACKEND_DIR) && $(PYTEST) app/tests/ -v

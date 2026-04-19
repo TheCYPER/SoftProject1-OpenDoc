@@ -12,6 +12,7 @@ dist/
 coverage.xml
 htmlcov/
 *.db
+*.sqlite3
 .venv/
 venv/
 

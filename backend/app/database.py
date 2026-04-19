@@ -24,6 +24,8 @@ async def init_db():
             "ai_interactions": {
                 "provider_name": "VARCHAR(50)",
                 "model_name": "VARCHAR(100)",
+                "prompt_text": "TEXT",
+                "system_prompt_text": "TEXT",
                 "error_code": "VARCHAR(100)",
                 "error_message": "VARCHAR(500)",
             },
