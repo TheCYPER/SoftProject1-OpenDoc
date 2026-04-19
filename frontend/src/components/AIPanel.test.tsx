@@ -129,6 +129,28 @@ describe("AIPanel", () => {
     expect(applyAIJob).toHaveBeenCalledWith("job-1", "full", "rev-1");
   });
 
+  it("supports partial acceptance of selected diff blocks", async () => {
+    const user = userEvent.setup();
+    const { onApply } = renderPanel({
+      getSelection: () => ({
+        selectedText: "Original text goes here.",
+        range: { from: 0, to: 24 },
+      }),
+    });
+    await runStreamingAI(user);
+
+    const checkboxes = screen.getAllByRole("checkbox");
+    expect(checkboxes.length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: /accept selected/i }));
+
+    expect(applyAIJob).toHaveBeenCalledTimes(1);
+    expect(applyAIJob.mock.calls[0][0]).toBe("job-1");
+    expect(applyAIJob.mock.calls[0][1]).toBe("partial");
+    expect(applyAIJob.mock.calls[0][2]).toBe("rev-1");
+    expect(applyAIJob.mock.calls[0][3].length).toBeGreaterThan(0);
+    expect(onApply).toHaveBeenCalled();
+  });
+
   it("rejects a streamed suggestion via the backend", async () => {
     const user = userEvent.setup();
     const { onApply } = renderPanel();
