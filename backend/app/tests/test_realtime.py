@@ -60,6 +60,22 @@ def _setup_user_and_doc(client: TestClient) -> tuple[str, str]:
     return token, doc_id
 
 
+def _register_and_login(client: TestClient, email_prefix: str, display_name: str) -> tuple[str, str]:
+    email = f"{email_prefix}_{uuid.uuid4().hex[:8]}@example.com"
+    resp = client.post("/api/auth/register", json={
+        "email": email,
+        "display_name": display_name,
+        "password": "testpass123",
+    })
+    assert resp.status_code == 201
+    resp = client.post("/api/auth/login", json={
+        "email": email,
+        "password": "testpass123",
+    })
+    assert resp.status_code == 200
+    return email, resp.json()["access_token"]
+
+
 def _drain_initial_sync(ws) -> None:
     """Consume the initial SyncStep1 + SyncStep2 the server sends on connect."""
     # Server sends SyncStep1 then SyncStep2
@@ -187,6 +203,28 @@ def test_websocket_broadcasts_presence_leave_on_disconnect():
     app.dependency_overrides.clear()
 
 
+def test_presence_leave_includes_awareness_client_ids():
+    """Disconnect payload should include the exact awareness client ids seen from that socket."""
+    import json as _json
+
+    app.dependency_overrides[get_db] = _override_get_db
+    with TestClient(app) as client:
+        token, doc_id = _setup_user_and_doc(client)
+        ws_router._rooms.clear()
+        with client.websocket_connect(f"/ws/documents/{doc_id}?token={token}") as ws_watcher:
+            _drain_initial_sync(ws_watcher)
+            with client.websocket_connect(f"/ws/documents/{doc_id}?token={token}") as ws_leaving:
+                _drain_initial_sync(ws_leaving)
+                awareness_payload = bytes([0x01, 0x07, 0x01, 0x02, 0x7B, 0x7D])
+                awareness_frame = bytes([MSG_AWARENESS, len(awareness_payload)]) + awareness_payload
+                ws_leaving.send_bytes(awareness_frame)
+                assert ws_watcher.receive_bytes() == awareness_frame
+            payload = _json.loads(ws_watcher.receive_text())
+            assert payload["type"] == "presence_leave"
+            assert payload["client_ids"] == [7]
+    app.dependency_overrides.clear()
+
+
 def test_viewer_send_update_receives_read_only_error():
     """A viewer who attempts to send a SYNC_UPDATE gets an error frame back."""
     import json as _json
@@ -258,4 +296,44 @@ def test_websocket_rejects_refresh_token():
                 assert False, "Expected refresh token rejection"
         except WebSocketDisconnect as exc:
             assert exc.code == 4401
+    app.dependency_overrides.clear()
+
+
+def test_revoked_share_closes_active_websocket():
+    """Deleting a USER share should terminate the grantee's active websocket session."""
+    app.dependency_overrides[get_db] = _override_get_db
+    with TestClient(app) as client:
+        owner_token, doc_id = _setup_user_and_doc(client)
+        ws_router._rooms.clear()
+
+        bob_email, bob_token = _register_and_login(client, "revoked", "Revoked Bob")
+        share_resp = client.post(
+            f"/api/documents/{doc_id}/shares",
+            json={
+                "grantee_type": "USER",
+                "grantee_ref": bob_email,
+                "role": "editor",
+                "allow_ai": True,
+            },
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert share_resp.status_code == 201
+        share_id = share_resp.json()["share_id"]
+
+        with client.websocket_connect(f"/ws/documents/{doc_id}?token={bob_token}") as ws:
+            _drain_initial_sync(ws)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(ws.receive_text)
+                delete_resp = client.delete(
+                    f"/api/documents/{doc_id}/shares/{share_id}",
+                    headers={"Authorization": f"Bearer {owner_token}"},
+                )
+                assert delete_resp.status_code == 204
+                try:
+                    future.result(timeout=2)
+                    assert False, "Expected websocket disconnect after share revoke"
+                except WebSocketDisconnect as exc:
+                    assert exc.code == 4403
+                except TimeoutError:
+                    assert False, "Timed out waiting for revoke-triggered websocket close"
     app.dependency_overrides.clear()

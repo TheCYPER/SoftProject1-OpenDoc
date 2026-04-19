@@ -11,6 +11,7 @@ from app.models.audit_event import AuditEvent
 from app.models.document import Document
 from app.models.document_share import DocumentShare
 from app.models.user import User
+from app.realtime.websocket import close_document_sessions_for_user
 from app.schemas.document import (
     ShareCreate,
     ShareLinkCreate,
@@ -29,6 +30,13 @@ _LINK_ROLES = {"viewer", "editor"}
 
 def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _resolve_share_user_id(db: AsyncSession, share: DocumentShare) -> str | None:
+    if share.grantee_type != "USER" or share.grantee_ref is None:
+        return None
+    result = await db.execute(select(User.user_id).where(User.email == share.grantee_ref))
+    return result.scalar_one_or_none()
 
 
 @router.get(
@@ -134,6 +142,14 @@ async def update_share(
     db.add(audit)
     await db.commit()
     await db.refresh(share)
+
+    target_user_id = await _resolve_share_user_id(db, share)
+    if target_user_id is not None:
+        await close_document_sessions_for_user(
+            document_id,
+            target_user_id,
+            reason="Share permissions updated",
+        )
     return share
 
 
@@ -161,6 +177,7 @@ async def delete_share(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
 
     grantee_ref = share.grantee_ref
+    target_user_id = await _resolve_share_user_id(db, share)
     await db.delete(share)
 
     audit = AuditEvent(
@@ -173,6 +190,12 @@ async def delete_share(
     )
     db.add(audit)
     await db.commit()
+    if target_user_id is not None:
+        await close_document_sessions_for_user(
+            document_id,
+            target_user_id,
+            reason="Share revoked",
+        )
 
 
 # ── Share by link — create / revoke / redeem ─────────────────────────────────

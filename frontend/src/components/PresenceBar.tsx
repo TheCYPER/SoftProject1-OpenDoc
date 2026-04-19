@@ -1,11 +1,9 @@
 import { useEffect, useState } from "react";
 import type { Awareness } from "y-protocols/awareness";
-
-interface Collaborator {
-  clientId: number;
-  name: string;
-  color: string;
-}
+import {
+  collectCollaborators,
+  type Collaborator,
+} from "../lib/collaborationPresence";
 
 interface Props {
   awareness: Awareness | null;
@@ -18,17 +16,7 @@ export default function PresenceBar({ awareness }: Props) {
     if (!awareness) return;
 
     const update = () => {
-      const states: Collaborator[] = [];
-      awareness.getStates().forEach(
-        (state: Record<string, unknown>, clientId: number) => {
-          if (clientId === awareness.clientID) return;
-          const user = state?.user as { name?: string; color?: string } | undefined;
-          const name = user?.name ?? `User ${clientId}`;
-          const color = user?.color ?? hslForId(clientId);
-          states.push({ clientId, name, color });
-        }
-      );
-      setCollaborators(states);
+      setCollaborators(collectCollaborators(awareness));
     };
 
     awareness.on("change", update);
@@ -103,8 +91,4 @@ export default function PresenceBar({ awareness }: Props) {
       `}</style>
     </div>
   );
-}
-
-function hslForId(id: number): string {
-  return `hsl(${(id * 47) % 360}, 65%, 50%)`;
 }
