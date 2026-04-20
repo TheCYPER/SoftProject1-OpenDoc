@@ -1,6 +1,14 @@
 import axios from "axios";
 import { EditorContent, useEditor } from "@tiptap/react";
-import { yDocToProsemirrorJSON, ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey } from "y-prosemirror";
+import {
+  yCursorPlugin,
+  yCursorPluginKey,
+  yDocToProsemirrorJSON,
+  ySyncPlugin,
+  ySyncPluginKey,
+  yUndoPlugin,
+  yUndoPluginKey,
+} from "y-prosemirror";
 import Placeholder from "@tiptap/extension-placeholder";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -15,6 +23,7 @@ import ShareModal from "../components/ShareModal";
 import VersionPanel from "../components/VersionPanel";
 import { getAccessToken } from "../lib/auth";
 import { CollaborationClient, type ConnectionStatus } from "../lib/collaboration";
+import { cursorBuilder, selectionBuilder } from "../lib/collaborationPresence";
 import { useToast } from "../components/Toast";
 import type { Document as DocType, EditorSelectionRange, ProseMirrorDoc, ProseMirrorNode, User } from "../types";
 
@@ -131,6 +140,7 @@ export default function EditorPage() {
     editorProps: {
       attributes: {
         class: "rich-editor__content",
+        "data-testid": "editor-content",
       },
     },
     onUpdate: ({ editor: nextEditor }) => {
@@ -142,10 +152,19 @@ export default function EditorPage() {
     },
   });
 
+  const loadDocument = useCallback(async () => {
+    try {
+      const resp = await api.get(`/api/documents/${documentId}`);
+      setDoc(resp.data);
+    } catch {
+      navigate("/documents");
+    }
+  }, [documentId, navigate]);
+
   useEffect(() => {
-    loadDocument();
+    void loadDocument();
     api.get("/api/me").then((r) => setCurrentUser(r.data)).catch(() => {});
-  }, [documentId]);
+  }, [documentId, loadDocument]);
 
   useEffect(() => {
     if (!editor) return;
@@ -154,6 +173,10 @@ export default function EditorPage() {
       return;
     }
     if (activeDocumentIdRef.current === documentId && collaborationClientRef.current && ydocRef.current) {
+      collaborationClientRef.current.setLocalUser(
+        currentUser?.display_name ?? "User",
+        currentUser?.user_id,
+      );
       return;
     }
 
@@ -172,7 +195,7 @@ export default function EditorPage() {
     idbPersistenceRef.current?.destroy();
     idbPersistenceRef.current = new IndexeddbPersistence(`collab-doc-${documentId}`, ydoc);
 
-    editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey]);
+    editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey, yCursorPluginKey]);
     editor.registerPlugin(ySyncPlugin(yXmlFragment));
     editor.registerPlugin(yUndoPlugin());
 
@@ -196,9 +219,12 @@ export default function EditorPage() {
         }
       },
       ydoc,
+      userId: currentUser?.user_id,
       displayName: currentUser?.display_name ?? "User",
+      onPermissionsChanged: loadDocument,
       onStatusChange: setConnectionStatus,
     });
+    editor.registerPlugin(yCursorPlugin(client.awareness, { cursorBuilder, selectionBuilder }));
     collaborationClientRef.current = client;
     setAwareness(client.awareness);
     client.connect();
@@ -209,55 +235,30 @@ export default function EditorPage() {
       idbPersistenceRef.current?.destroy();
       idbPersistenceRef.current = null;
       setAwareness(null);
-      editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey]);
+      editor.unregisterPlugin([ySyncPluginKey, yUndoPluginKey, yCursorPluginKey]);
       ydocRef.current?.destroy();
       ydocRef.current = null;
       activeDocumentIdRef.current = null;
     };
-  }, [editor, documentId, doc?.document_id, currentUser?.display_name]);
+  }, [editor, documentId, doc?.document_id, currentUser?.display_name, currentUser?.user_id, loadDocument]);
 
   useEffect(() => {
     if (!editor) return;
     editor.setEditable(canEdit);
   }, [editor, canEdit]);
 
-  const kickAccessDenied = useCallback(() => {
-    toast("You no longer have access to this document.", "error");
-    navigate("/documents");
-  }, [navigate, toast]);
-
   useEffect(() => {
     if (connectionStatus.state !== "forbidden") return;
-    kickAccessDenied();
-  }, [connectionStatus.state, kickAccessDenied]);
-
-  // Permission-revocation safety net.
-  //
-  // The backend WS handler validates auth only at connect time. Once a user's
-  // session is open, revoking their share does not currently terminate the WS
-  // — the real fix belongs on the server (close the WS with code 4403 on share
-  // DELETE/PATCH). Until that lands, poll GET /api/documents/{id} every 30s;
-  // a 403 means we lost access and we kick ourselves out. Paired with the
-  // auto-save 403 handler below, this bounds the "still visible after revoke"
-  // window to at most the polling interval for idle users, and to ~one debounce
-  // window (3s) for actively-editing users.
-  const connectionStateRef = useRef(connectionStatus.state);
-  useEffect(() => {
-    connectionStateRef.current = connectionStatus.state;
-  }, [connectionStatus.state]);
-
-  useEffect(() => {
-    if (!documentId) return;
-    const interval = window.setInterval(() => {
-      if (connectionStateRef.current === "offline") return;
-      api.get(`/api/documents/${documentId}`).catch((err) => {
-        if (axios.isAxiosError(err) && err.response?.status === 403) {
-          kickAccessDenied();
-        }
-      });
-    }, 30_000);
-    return () => window.clearInterval(interval);
-  }, [documentId, kickAccessDenied]);
+    void (async () => {
+      try {
+        await idbPersistenceRef.current?.clearData();
+      } catch {
+        // Ignore cache-clear failures; redirect still matters more.
+      }
+      toast("You no longer have access to this document.", "error");
+      navigate("/documents");
+    })();
+  }, [connectionStatus.state, navigate, toast]);
 
   // Warn the user before closing the tab if we're offline (edits are cached
   // in IndexedDB and will sync on reconnect — but if they switch browsers
@@ -281,15 +282,6 @@ export default function EditorPage() {
     prevConnectionStateRef.current = connectionStatus.state;
   }, [connectionStatus.state, toast]);
 
-  const loadDocument = async () => {
-    try {
-      const resp = await api.get(`/api/documents/${documentId}`);
-      setDoc(resp.data);
-    } catch {
-      navigate("/documents");
-    }
-  };
-
   const reloadFromServer = () => {
     // Force Yjs re-initialization — destroys old Yjs doc and reconnects to
     // get the latest authoritative state from the server.
@@ -298,10 +290,11 @@ export default function EditorPage() {
     collaborationClientRef.current = null;
     if (ydocRef.current) {
       editor?.unregisterPlugin([ySyncPluginKey, yUndoPluginKey]);
+      editor?.unregisterPlugin([yCursorPluginKey]);
       ydocRef.current.destroy();
       ydocRef.current = null;
     }
-    loadDocument();
+    void loadDocument();
   };
 
   const saveDocument = useCallback(async () => {
@@ -319,18 +312,13 @@ export default function EditorPage() {
       setLastSavedAt(new Date());
       setSaveStatus("saved");
     } catch (err) {
-      if (axios.isAxiosError(err) && err.response?.status === 403) {
-        // Access revoked mid-session — no point retrying, kick immediately.
-        kickAccessDenied();
-        return;
-      }
       const msg = axios.isAxiosError(err)
         ? err.response?.data?.detail || err.message
         : "Save failed";
       setSaveError(msg);
       setSaveStatus("error");
     }
-  }, [canEdit, documentId, editor, kickAccessDenied]);
+  }, [canEdit, documentId, editor]);
 
   const saveDocumentRef = useRef(saveDocument);
   useEffect(() => {
@@ -388,6 +376,7 @@ export default function EditorPage() {
 
   const handleApply = (
     newText: string,
+    originalText: string,
     selection?: EditorSelectionRange
   ): { ok: boolean; error?: string } => {
     if (!editor) {
@@ -398,6 +387,14 @@ export default function EditorPage() {
     }
 
     if (selection) {
+      const currentSelectedText = editor.state.doc.textBetween(selection.from, selection.to, "\n");
+      if (currentSelectedText !== originalText) {
+        return {
+          ok: false,
+          error:
+            "The selected text changed while the AI suggestion was being generated. Review the suggestion and re-run AI on the latest content.",
+        };
+      }
       editor.chain().focus().insertContentAt(selection, newText).run();
       return { ok: true };
     }
@@ -742,6 +739,8 @@ export default function EditorPage() {
             documentId={documentId!}
             editor={editor}
             getSelection={getSelection}
+            canEdit={canEdit}
+            baseRevisionId={doc.current_revision_id}
             onApply={handleApply}
             onUndo={handleUndo}
           />

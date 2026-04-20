@@ -22,7 +22,13 @@ async def get_audit_trail(
     current_user: User = Depends(get_current_user),
 ):
     """Return the audit trail for a document. Requires owner access."""
-    await check_document_access(db, document_id, current_user, required_role="owner")
+    await check_document_access(
+        db,
+        document_id,
+        current_user,
+        required_role="owner",
+        allow_deleted=True,
+    )
     result = await db.execute(
         select(AuditEvent)
         .where(AuditEvent.document_id == document_id)

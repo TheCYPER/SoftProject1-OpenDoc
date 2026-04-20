@@ -1,9 +1,21 @@
-import axios from "axios";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
-import api from "../api/client";
+
+import {
+  applyAIJob,
+  cancelAIJob,
+  fetchAIHistory,
+  rejectAIJob,
+  streamAIJob,
+} from "../api/ai";
 import { useToast } from "./Toast";
-import type { AISuggestion, EditorSelectionRange } from "../types";
+import type {
+  AIActionName,
+  AIHistoryItem,
+  AIProviderName,
+  AISuggestion,
+  EditorSelectionRange,
+} from "../types";
 
 interface Selection {
   selectedText: string;
@@ -20,13 +32,19 @@ interface Props {
   documentId: string;
   editor: Editor | null;
   getSelection: () => Selection | null;
-  onApply: (newText: string, selection?: EditorSelectionRange) => { ok: boolean; error?: string };
+  canEdit: boolean;
+  baseRevisionId?: string | null;
+  onApply: (
+    newText: string,
+    originalText: string,
+    selection?: EditorSelectionRange,
+  ) => { ok: boolean; error?: string };
   onUndo: (req: UndoRequest) => { ok: boolean; error?: string };
 }
 
-const ACTIONS = ["rewrite", "summarize", "translate", "restructure"] as const;
+const ACTIONS: AIActionName[] = ["rewrite", "summarize", "translate", "restructure"];
 
-const ACTION_ICONS: Record<string, string> = {
+const ACTION_LABELS: Record<AIActionName, string> = {
   rewrite: "Rewrite",
   summarize: "Summarize",
   translate: "Translate",
@@ -34,10 +52,25 @@ const ACTION_ICONS: Record<string, string> = {
 };
 
 type ViewMode = "diff" | "side" | "edit";
+type StreamState = "idle" | "streaming" | "ready" | "error" | "cancelled";
 
 interface DiffToken {
   type: "eq" | "add" | "del";
   text: string;
+}
+
+interface DiffSegment {
+  type: "eq" | "block";
+  text?: string;
+  id?: number;
+  originalText?: string;
+  replacementText?: string;
+}
+
+interface AppliedRecord {
+  originalText: string;
+  appliedText: string;
+  selection: EditorSelectionRange | null;
 }
 
 function wordDiff(a: string, b: string): DiffToken[] {
@@ -47,8 +80,8 @@ function wordDiff(a: string, b: string): DiffToken[] {
   const n = aw.length;
   const m = bw.length;
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-  for (let i = 1; i <= n; i++) {
-    for (let j = 1; j <= m; j++) {
+  for (let i = 1; i <= n; i += 1) {
+    for (let j = 1; j <= m; j += 1) {
       dp[i][j] = aw[i - 1] === bw[j - 1]
         ? dp[i - 1][j - 1] + 1
         : Math.max(dp[i - 1][j], dp[i][j - 1]);
@@ -60,125 +93,387 @@ function wordDiff(a: string, b: string): DiffToken[] {
   while (i > 0 && j > 0) {
     if (aw[i - 1] === bw[j - 1]) {
       out.unshift({ type: "eq", text: aw[i - 1] });
-      i--; j--;
+      i -= 1;
+      j -= 1;
     } else if (dp[i - 1][j] >= dp[i][j - 1]) {
       out.unshift({ type: "del", text: aw[i - 1] });
-      i--;
+      i -= 1;
     } else {
       out.unshift({ type: "add", text: bw[j - 1] });
-      j--;
+      j -= 1;
     }
   }
-  while (i > 0) { out.unshift({ type: "del", text: aw[--i] }); }
-  while (j > 0) { out.unshift({ type: "add", text: bw[--j] }); }
+  while (i > 0) {
+    out.unshift({ type: "del", text: aw[i - 1] });
+    i -= 1;
+  }
+  while (j > 0) {
+    out.unshift({ type: "add", text: bw[j - 1] });
+    j -= 1;
+  }
   return out;
 }
 
-interface AppliedRecord {
-  originalText: string;
-  appliedText: string;
-  selection: EditorSelectionRange | null;
+function buildDiffSegments(tokens: DiffToken[]): DiffSegment[] {
+  const segments: DiffSegment[] = [];
+  let currentEqual = "";
+  let currentBlockTokens: DiffToken[] = [];
+  let blockId = 0;
+
+  const flushEqual = () => {
+    if (!currentEqual) return;
+    segments.push({ type: "eq", text: currentEqual });
+    currentEqual = "";
+  };
+
+  const flushBlock = () => {
+    if (currentBlockTokens.length === 0) return;
+    segments.push({
+      type: "block",
+      id: blockId,
+      originalText: currentBlockTokens
+        .filter((token) => token.type !== "add")
+        .map((token) => token.text)
+        .join(""),
+      replacementText: currentBlockTokens
+        .filter((token) => token.type !== "del")
+        .map((token) => token.text)
+        .join(""),
+    });
+    blockId += 1;
+    currentBlockTokens = [];
+  };
+
+  for (const token of tokens) {
+    if (token.type === "eq") {
+      flushBlock();
+      currentEqual += token.text;
+    } else {
+      flushEqual();
+      currentBlockTokens.push(token);
+    }
+  }
+
+  flushBlock();
+  flushEqual();
+  return segments;
 }
 
-export default function AIPanel({ documentId, editor, getSelection, onApply, onUndo }: Props) {
+function composePartialSuggestion(segments: DiffSegment[], selectedBlockIds: number[]): string {
+  const selected = new Set(selectedBlockIds);
+  return segments.map((segment) => {
+    if (segment.type === "eq") {
+      return segment.text ?? "";
+    }
+    if (selected.has(segment.id ?? -1)) {
+      return segment.replacementText ?? "";
+    }
+    return segment.originalText ?? "";
+  }).join("");
+}
+
+function suggestionFromHistory(item: AIHistoryItem): AISuggestion | null {
+  if (!item.suggestion_id) return null;
+  return {
+    suggestion_id: item.suggestion_id,
+    original_text: item.original_text,
+    suggested_text: item.suggested_text,
+    diff_json: null,
+    stale: item.stale,
+    disposition: item.disposition ?? "pending",
+    partial_output_available: item.partial_output_available,
+  };
+}
+
+export default function AIPanel({
+  documentId,
+  editor,
+  getSelection,
+  canEdit,
+  baseRevisionId,
+  onApply,
+  onUndo,
+}: Props) {
   const { toast } = useToast();
-  const [action, setAction] = useState<string>("rewrite");
+  const abortRef = useRef<AbortController | null>(null);
+
+  const [action, setAction] = useState<AIActionName>("rewrite");
   const [targetLang, setTargetLang] = useState("Chinese");
-  const [loading, setLoading] = useState(false);
+  const [streamState, setStreamState] = useState<StreamState>("idle");
   const [suggestion, setSuggestion] = useState<AISuggestion | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [selectionSnapshot, setSelectionSnapshot] = useState<Selection | null>(null);
+  const [historyPreview, setHistoryPreview] = useState(false);
   const [error, setError] = useState("");
-  const [selRange, setSelRange] = useState<EditorSelectionRange | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("diff");
   const [editedSuggestion, setEditedSuggestion] = useState("");
   const [lastApplied, setLastApplied] = useState<AppliedRecord | null>(null);
+  const [provider, setProvider] = useState<AIProviderName | "">("");
+  const [model, setModel] = useState("");
+  const [history, setHistory] = useState<AIHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedDiffBlocks, setSelectedDiffBlocks] = useState<number[]>([]);
 
-  const [provider, setProvider] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
   const editorText = editor?.getText({ blockSeparator: "\n" }) ?? "";
+  const isStreaming = streamState === "streaming";
+  const original = suggestion?.original_text ?? "";
+  const suggested = suggestion?.suggested_text ?? "";
+  const diff = suggestion && !isStreaming ? wordDiff(original, suggested) : [];
+  const diffSegments = buildDiffSegments(diff);
+  const diffBlocks = diffSegments.filter((segment): segment is DiffSegment & { type: "block"; id: number; originalText: string; replacementText: string } => (
+    segment.type === "block"
+      && typeof segment.id === "number"
+      && typeof segment.originalText === "string"
+      && typeof segment.replacementText === "string"
+  ));
 
-  // Sync editedSuggestion with the latest suggestion text whenever a new one arrives.
   useEffect(() => {
     if (suggestion?.suggested_text != null) {
       setEditedSuggestion(suggestion.suggested_text);
-      setViewMode("diff");
+      if (!isStreaming) {
+        setViewMode("diff");
+      }
+      setSelectedDiffBlocks(buildDiffSegments(wordDiff(
+        suggestion.original_text ?? "",
+        suggestion.suggested_text,
+      ))
+        .filter((segment): segment is DiffSegment & { type: "block"; id: number } => (
+          segment.type === "block" && typeof segment.id === "number"
+        ))
+        .map((block) => block.id));
     }
-  }, [suggestion?.suggestion_id, suggestion?.suggested_text]);
+  }, [isStreaming, suggestion?.original_text, suggestion?.suggestion_id, suggestion?.suggested_text]);
 
-  const runAI = async () => {
-    setLoading(true);
-    setError("");
-    setSuggestion(null);
-    setLastApplied(null);
+  useEffect(() => {
+    void loadHistory();
+  }, [documentId]);
 
-    const sel = getSelection();
-    const inputText = sel ? sel.selectedText : (editor?.getText({ blockSeparator: "\n" }) ?? "");
-    setSelRange(sel?.range ?? null);
+  async function loadHistory() {
+    setHistoryLoading(true);
+    try {
+      const response = await fetchAIHistory(documentId);
+      setHistory(response.items);
+    } catch {
+      // History is useful but non-blocking.
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
 
-    if (!inputText.trim()) {
-      setError("No text to process. Write something or select text first.");
-      setLoading(false);
+  async function runAI() {
+    if (!canEdit) {
+      setError("You only have viewer access for this document.");
       return;
     }
 
-    try {
-      const body: Record<string, unknown> = {
-        action,
-        scope: sel ? "selection" : "document",
-        options: action === "translate" ? { target_language: targetLang } : {},
-        selected_text: inputText,
-      };
-      if (sel) body.selection_range = sel.range;
-      if (provider) body.provider = provider;
-      if (apiKey) body.api_key = apiKey;
-      if (baseUrl) body.base_url = baseUrl;
+    setStreamState("streaming");
+    setError("");
+    setSuggestion(null);
+    setLastApplied(null);
+    setSelectedJobId(null);
+    setHistoryPreview(false);
 
-      const jobResp = await api.post(`/api/documents/${documentId}/ai-jobs`, body);
-      const jobId = jobResp.data.job_id;
-      const sugResp = await api.get(`/api/ai-jobs/${jobId}/suggestion`);
-      setSuggestion(sugResp.data);
-    } catch (err: unknown) {
-      if (axios.isAxiosError(err)) {
-        setError(err.response?.data?.detail || "AI request failed");
-      } else {
-        setError("Unknown error");
-      }
-    } finally {
-      setLoading(false);
+    const selection = getSelection();
+    const inputText = selection ? selection.selectedText : editorText;
+    setSelectionSnapshot(selection);
+
+    if (!inputText.trim()) {
+      setError("No text to process. Write something or select text first.");
+      setStreamState("idle");
+      return;
     }
-  };
 
-  const handleAccept = () => {
-    if (!suggestion) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const body = {
+      action,
+      scope: selection ? "selection" : "document",
+      options: action === "translate" ? { target_language: targetLang } : {},
+      selected_text: inputText,
+      selection_range: selection?.range,
+      base_revision_id: baseRevisionId,
+      provider: provider || undefined,
+      model: model || undefined,
+    } as const;
+
+    try {
+      await streamAIJob(
+        documentId,
+        body,
+        {
+          onStarted: (payload) => {
+            setSelectedJobId(payload.job_id);
+            setSuggestion({
+              suggestion_id: payload.suggestion_id,
+              original_text: payload.original_text,
+              suggested_text: "",
+              diff_json: null,
+              stale: payload.stale,
+              disposition: "pending",
+              partial_output_available: false,
+            });
+          },
+          onDelta: (payload) => {
+            setSuggestion((current) => current ? {
+              ...current,
+              suggested_text: `${current.suggested_text ?? ""}${payload.delta}`,
+            } : current);
+          },
+          onCompleted: (payload) => {
+            setStreamState("ready");
+            setSuggestion((current) => current ? {
+              ...current,
+              stale: payload.stale ?? current.stale,
+              suggested_text: payload.text ?? current.suggested_text,
+              partial_output_available: false,
+            } : current);
+            void loadHistory();
+          },
+          onError: (payload) => {
+            setStreamState("error");
+            setError(payload.message ?? "AI request failed.");
+            setSuggestion((current) => current ? {
+              ...current,
+              suggested_text: payload.partial_text ?? current.suggested_text,
+              partial_output_available: Boolean(payload.partial_output_available),
+            } : current);
+            void loadHistory();
+          },
+          onCancelled: () => {
+            setStreamState("cancelled");
+            setSuggestion(null);
+            setSelectedJobId(null);
+            void loadHistory();
+          },
+        },
+        controller.signal,
+      );
+    } catch (err) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      setStreamState("error");
+      setError(err instanceof Error ? err.message : "AI request failed.");
+    } finally {
+      abortRef.current = null;
+    }
+  }
+
+  async function handleCancel() {
+    abortRef.current?.abort();
+    if (selectedJobId) {
+      void cancelAIJob(selectedJobId).catch(() => undefined);
+    }
+    setStreamState("cancelled");
+    setSuggestion(null);
+    setSelectedJobId(null);
+    setError("");
+    toast("Generation cancelled", "info");
+  }
+
+  async function handleAccept() {
+    if (!suggestion || !selectedJobId) return;
+    if (historyPreview) {
+      setError("History items are review-only. Re-run AI on the current selection to apply a fresh suggestion.");
+      return;
+    }
     const textToApply = editedSuggestion;
     if (!textToApply.trim()) {
       setError("Nothing to apply.");
       return;
     }
-    const result = onApply(textToApply, selRange ?? undefined);
+
+    const originalText = suggestion.original_text ?? "";
+    const result = onApply(textToApply, originalText, selectionSnapshot?.range ?? undefined);
     if (!result.ok) {
       setError(result.error || "Unable to apply suggestion");
       return;
     }
+
+    try {
+      await applyAIJob(selectedJobId, "full", baseRevisionId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to record AI apply.");
+      return;
+    }
+
     setLastApplied({
-      originalText: suggestion.original_text ?? "",
+      originalText,
       appliedText: textToApply,
-      selection: selRange,
+      selection: selectionSnapshot?.range ?? null,
     });
-    toast(editedSuggestion === suggestion.suggested_text ? "Suggestion applied" : "Edited suggestion applied", "success");
+    toast(
+      editedSuggestion === suggestion.suggested_text ? "Suggestion applied" : "Edited suggestion applied",
+      "success",
+    );
     setSuggestion(null);
-    setSelRange(null);
+    setSelectedJobId(null);
+    setSelectionSnapshot(null);
+    setHistoryPreview(false);
     setError("");
-  };
+    void loadHistory();
+  }
 
-  const handleReject = () => {
+  async function handleAcceptSelected() {
+    if (!suggestion || !selectedJobId) return;
+    if (historyPreview) {
+      setError("History items are review-only. Re-run AI on the current selection to apply a fresh suggestion.");
+      return;
+    }
+    if (selectedDiffBlocks.length === 0) {
+      setError("Select at least one changed block to apply.");
+      return;
+    }
+
+    const textToApply = composePartialSuggestion(diffSegments, selectedDiffBlocks);
+    const originalText = suggestion.original_text ?? "";
+    const result = onApply(textToApply, originalText, selectionSnapshot?.range ?? undefined);
+    if (!result.ok) {
+      setError(result.error || "Unable to apply partial suggestion");
+      return;
+    }
+
+    try {
+      await applyAIJob(selectedJobId, "partial", baseRevisionId, selectedDiffBlocks);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to record partial apply.");
+      return;
+    }
+
+    setLastApplied({
+      originalText,
+      appliedText: textToApply,
+      selection: selectionSnapshot?.range ?? null,
+    });
+    toast("Selected changes applied", "success");
     setSuggestion(null);
-    setSelRange(null);
+    setSelectedJobId(null);
+    setSelectionSnapshot(null);
+    setHistoryPreview(false);
     setError("");
-  };
+    void loadHistory();
+  }
 
-  const handleUndo = () => {
+  async function handleReject() {
+    if (selectedJobId) {
+      try {
+        await rejectAIJob(selectedJobId);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to reject suggestion.");
+        return;
+      }
+    }
+    setSuggestion(null);
+    setSelectedJobId(null);
+    setSelectionSnapshot(null);
+    setHistoryPreview(false);
+    setError("");
+    void loadHistory();
+  }
+
+  function handleUndo() {
     if (!lastApplied) return;
     const result = onUndo(lastApplied);
     if (!result.ok) {
@@ -187,25 +482,36 @@ export default function AIPanel({ documentId, editor, getSelection, onApply, onU
     }
     toast("Suggestion reverted", "info");
     setLastApplied(null);
-  };
+  }
 
-  const original = suggestion?.original_text ?? "";
-  const suggested = suggestion?.suggested_text ?? "";
-  const diff = suggestion ? wordDiff(original, suggested) : [];
+  function handleSelectHistory(item: AIHistoryItem) {
+    const historySuggestion = suggestionFromHistory(item);
+    setSelectedJobId(item.job_id);
+    setSelectionSnapshot(null);
+    setHistoryPreview(true);
+    setSuggestion(historySuggestion);
+    setStreamState(item.status === "failed" ? "error" : "ready");
+    setError(item.error_message ?? "");
+  }
+
+  function toggleDiffBlock(blockId: number) {
+    setSelectedDiffBlocks((current) => current.includes(blockId)
+      ? current.filter((id) => id !== blockId)
+      : [...current, blockId].sort((left, right) => left - right));
+  }
 
   return (
     <div className="ai-panel">
       <div className="ai-panel-header">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M12 2a4 4 0 0 1 4 4c0 1.1-.9 2-2 2h-4a2 2 0 0 1 0-4h4"/>
-          <path d="M9 12h6"/>
-          <path d="M9 16h6"/>
-          <path d="M5 20h14a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2z"/>
+          <path d="M12 2a4 4 0 0 1 4 4c0 1.1-.9 2-2 2h-4a2 2 0 0 1 0-4h4" />
+          <path d="M9 12h6" />
+          <path d="M9 16h6" />
+          <path d="M5 20h14a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2z" />
         </svg>
         <h4>AI Assistant</h4>
       </div>
 
-      {/* Persistent Undo banner — survives until next AI action or explicit dismiss */}
       {lastApplied && (
         <div className="ai-undo-banner">
           <span className="text-xs">Suggestion applied</span>
@@ -222,20 +528,19 @@ export default function AIPanel({ documentId, editor, getSelection, onApply, onU
         </div>
       )}
 
-      {/* Action buttons */}
       <div className="ai-actions">
-        {ACTIONS.map((a) => (
+        {ACTIONS.map((value) => (
           <button
-            key={a}
-            onClick={() => setAction(a)}
-            className={`btn btn-sm ${action === a ? "btn-primary" : ""}`}
+            key={value}
+            onClick={() => setAction(value)}
+            className={`btn btn-sm ${action === value ? "btn-primary" : ""}`}
+            disabled={isStreaming}
           >
-            {ACTION_ICONS[a]}
+            {ACTION_LABELS[value]}
           </button>
         ))}
       </div>
 
-      {/* Translate language input */}
       {action === "translate" && (
         <div className="ai-translate-input">
           <label className="text-xs font-medium" style={{ color: "var(--text-h)" }}>
@@ -245,171 +550,232 @@ export default function AIPanel({ documentId, editor, getSelection, onApply, onU
             className="input"
             placeholder="e.g. Chinese, Spanish, French"
             value={targetLang}
-            onChange={(e) => setTargetLang(e.target.value)}
+            onChange={(event) => setTargetLang(event.target.value)}
+            disabled={isStreaming}
           />
         </div>
       )}
 
-      {/* Provider settings */}
       <button
         className="btn btn-ghost btn-sm ai-settings-toggle"
-        onClick={() => setShowSettings(!showSettings)}
+        onClick={() => setShowSettings((current) => !current)}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-        </svg>
         Provider Settings
       </button>
 
       {showSettings && (
         <div className="ai-settings">
-          <select className="select" value={provider} onChange={(e) => setProvider(e.target.value)}>
-            <option value="">Default (Ollama)</option>
+          <select
+            className="select"
+            value={provider}
+            onChange={(event) => setProvider(event.target.value as AIProviderName | "")}
+            disabled={isStreaming}
+          >
+            <option value="">Default Provider</option>
+            <option value="groq">Groq</option>
             <option value="openai">OpenAI</option>
             <option value="claude">Claude</option>
             <option value="ollama">Ollama</option>
           </select>
           <input
             className="input"
-            placeholder="API Key"
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-          />
-          <input
-            className="input"
-            placeholder="Base URL"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="Override model (optional)"
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+            disabled={isStreaming}
           />
         </div>
       )}
 
-      {/* Run button */}
       <button
         className="btn btn-primary ai-run-btn"
-        onClick={runAI}
-        disabled={loading || !editorText.trim()}
+        onClick={() => void runAI()}
+        disabled={isStreaming || !editorText.trim() || !canEdit}
       >
-        {loading ? (
+        {isStreaming ? (
           <>
             <span className="spinner" />
-            Processing...
+            Streaming...
           </>
         ) : (
-          `Run ${ACTION_ICONS[action]}`
+          `Run ${ACTION_LABELS[action]}`
         )}
       </button>
+
+      {isStreaming && (
+        <button className="btn btn-sm ai-cancel-btn" onClick={() => void handleCancel()}>
+          Cancel Generation
+        </button>
+      )}
 
       <p className="text-xs text-muted ai-tip">
         Select text first, or run on the entire document.
       </p>
 
-      {/* Error */}
       {error && <div className="alert alert-error">{error}</div>}
 
-      {/* Suggestion */}
+      <div className="ai-history">
+        <div className="ai-history-header">
+          <span className="text-xs">Recent AI history</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => void loadHistory()} disabled={historyLoading}>
+            Refresh
+          </button>
+        </div>
+        {historyLoading ? (
+          <div className="text-xs text-muted">Loading history…</div>
+        ) : history.length === 0 ? (
+          <div className="text-xs text-muted">No AI history for this document yet.</div>
+        ) : (
+          <div className="ai-history-list">
+            {history.slice(0, 5).map((item) => (
+              <button
+                key={item.job_id}
+                className="ai-history-item"
+                onClick={() => handleSelectHistory(item)}
+              >
+                <span>{ACTION_LABELS[item.action]}</span>
+                <span className="text-xs text-muted">
+                  {item.status}
+                  {item.provider_name ? ` · ${item.provider_name}` : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       {suggestion && (
         <div className="ai-suggestion">
           <div className="ai-suggestion-header">
             <h4>Suggestion</h4>
-            <span className="badge badge-accent">
-              {selRange ? "Selection" : "Full document"}
-            </span>
+            <div className="ai-suggestion-badges">
+              <span className="badge badge-accent">
+                {selectionSnapshot?.range ? "Selection" : "Full document"}
+              </span>
+              {suggestion.stale && <span className="badge">Stale</span>}
+              {suggestion.partial_output_available && <span className="badge">Partial</span>}
+            </div>
           </div>
 
-          {/* View mode toggle */}
-          <div className="ai-view-tabs" role="tablist">
-            <button
-              role="tab"
-              aria-selected={viewMode === "diff"}
-              className={`ai-view-tab ${viewMode === "diff" ? "is-active" : ""}`}
-              onClick={() => setViewMode("diff")}
-            >
-              Diff
-            </button>
-            <button
-              role="tab"
-              aria-selected={viewMode === "side"}
-              className={`ai-view-tab ${viewMode === "side" ? "is-active" : ""}`}
-              onClick={() => setViewMode("side")}
-            >
-              Side-by-side
-            </button>
-            <button
-              role="tab"
-              aria-selected={viewMode === "edit"}
-              className={`ai-view-tab ${viewMode === "edit" ? "is-active" : ""}`}
-              onClick={() => setViewMode("edit")}
-            >
-              Edit
-            </button>
-          </div>
-
-          {/* Body */}
-          {viewMode === "diff" && (
-            <div className="ai-suggestion-text ai-diff">
-              {diff.length === 0 ? (
-                <span className="text-muted">No changes.</span>
-              ) : (
-                diff.map((tok, idx) => {
-                  if (tok.type === "eq") return <span key={idx}>{tok.text}</span>;
-                  if (tok.type === "del")
-                    return (
-                      <del key={idx} className="ai-diff-del">{tok.text}</del>
-                    );
-                  return (
-                    <ins key={idx} className="ai-diff-add">{tok.text}</ins>
-                  );
-                })
-              )}
+          {isStreaming ? (
+            <div className="ai-suggestion-text">
+              {suggested || <span className="text-muted">Waiting for model output…</span>}
             </div>
-          )}
-
-          {viewMode === "side" && (
-            <div className="ai-side-by-side">
-              <div className="ai-side-block">
-                <div className="ai-side-label">Original</div>
-                <div className="ai-side-text">{original || <span className="text-muted">(empty)</span>}</div>
-              </div>
-              <div className="ai-side-block">
-                <div className="ai-side-label">Suggestion</div>
-                <div className="ai-side-text">{suggested || <span className="text-muted">(empty)</span>}</div>
-              </div>
-            </div>
-          )}
-
-          {viewMode === "edit" && (
-            <div className="ai-edit-wrap">
-              <label className="ai-side-label" htmlFor="ai-edit-textarea">
-                Suggestion (editable)
-              </label>
-              <textarea
-                id="ai-edit-textarea"
-                className="ai-edit-textarea"
-                value={editedSuggestion}
-                onChange={(e) => setEditedSuggestion(e.target.value)}
-                rows={Math.min(20, Math.max(4, editedSuggestion.split("\n").length + 1))}
-              />
-              {editedSuggestion !== suggested && (
+          ) : (
+            <>
+              <div className="ai-view-tabs" role="tablist">
                 <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => setEditedSuggestion(suggested)}
+                  role="tab"
+                  aria-selected={viewMode === "diff"}
+                  className={`ai-view-tab ${viewMode === "diff" ? "is-active" : ""}`}
+                  onClick={() => setViewMode("diff")}
                 >
-                  Reset to AI suggestion
+                  Diff
                 </button>
-              )}
-            </div>
-          )}
+                <button
+                  role="tab"
+                  aria-selected={viewMode === "side"}
+                  className={`ai-view-tab ${viewMode === "side" ? "is-active" : ""}`}
+                  onClick={() => setViewMode("side")}
+                >
+                  Side-by-side
+                </button>
+                <button
+                  role="tab"
+                  aria-selected={viewMode === "edit"}
+                  className={`ai-view-tab ${viewMode === "edit" ? "is-active" : ""}`}
+                  onClick={() => setViewMode("edit")}
+                >
+                  Edit
+                </button>
+              </div>
 
-          <div className="ai-suggestion-actions">
-            <button className="btn btn-primary btn-sm" onClick={handleAccept}>
-              Accept{editedSuggestion !== suggested ? " edited" : ""}
-            </button>
-            <button className="btn btn-sm" onClick={handleReject}>
-              Reject
-            </button>
-          </div>
+              {viewMode === "diff" && (
+                <>
+                  {diffBlocks.length > 0 && (
+                    <div className="ai-diff-blocks">
+                      {diffBlocks.map((block) => (
+                        <label key={block.id} className="ai-diff-block">
+                          <input
+                            type="checkbox"
+                            checked={selectedDiffBlocks.includes(block.id)}
+                            onChange={() => toggleDiffBlock(block.id)}
+                          />
+                          <span className="ai-diff-block__preview">
+                            <strong>Original:</strong> {block.originalText || "(empty)"}{" "}
+                            <strong>Suggested:</strong> {block.replacementText || "(empty)"}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  <div className="ai-suggestion-text ai-diff">
+                    {diff.length === 0 ? (
+                      <span className="text-muted">No changes.</span>
+                    ) : (
+                      diff.map((token, index) => {
+                        if (token.type === "eq") return <span key={index}>{token.text}</span>;
+                        if (token.type === "del") {
+                          return <del key={index} className="ai-diff-del">{token.text}</del>;
+                        }
+                        return <ins key={index} className="ai-diff-add">{token.text}</ins>;
+                      })
+                    )}
+                  </div>
+                </>
+              )}
+
+              {viewMode === "side" && (
+                <div className="ai-side-by-side">
+                  <div className="ai-side-block">
+                    <div className="ai-side-label">Original</div>
+                    <div className="ai-side-text">{original || <span className="text-muted">(empty)</span>}</div>
+                  </div>
+                  <div className="ai-side-block">
+                    <div className="ai-side-label">Suggestion</div>
+                    <div className="ai-side-text">{suggested || <span className="text-muted">(empty)</span>}</div>
+                  </div>
+                </div>
+              )}
+
+              {viewMode === "edit" && (
+                <div className="ai-edit-wrap">
+                  <label className="ai-side-label" htmlFor="ai-edit-textarea">
+                    Suggestion (editable)
+                  </label>
+                  <textarea
+                    id="ai-edit-textarea"
+                    className="ai-edit-textarea"
+                    value={editedSuggestion}
+                    onChange={(event) => setEditedSuggestion(event.target.value)}
+                    rows={Math.min(20, Math.max(4, editedSuggestion.split("\n").length + 1))}
+                  />
+                  {editedSuggestion !== suggested && (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setEditedSuggestion(suggested)}
+                    >
+                      Reset to AI suggestion
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="ai-suggestion-actions">
+                <button className="btn btn-primary btn-sm" onClick={() => void handleAccept()}>
+                  Accept{editedSuggestion !== suggested ? " edited" : ""}
+                </button>
+                {diffBlocks.length > 0 && (
+                  <button className="btn btn-sm" onClick={() => void handleAcceptSelected()}>
+                    Accept selected
+                  </button>
+                )}
+                <button className="btn btn-sm" onClick={() => void handleReject()}>
+                  Reject
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -450,11 +816,40 @@ export default function AIPanel({ documentId, editor, getSelection, onApply, onU
           flex-direction: column;
           gap: var(--space-sm);
         }
-        .ai-run-btn {
+        .ai-run-btn,
+        .ai-cancel-btn {
           width: 100%;
         }
         .ai-tip {
           text-align: center;
+        }
+        .ai-history {
+          border: 1px solid var(--border);
+          border-radius: var(--radius-sm);
+          padding: var(--space-sm);
+          display: flex;
+          flex-direction: column;
+          gap: var(--space-xs);
+        }
+        .ai-history-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .ai-history-list {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .ai-history-item {
+          display: flex;
+          justify-content: space-between;
+          gap: var(--space-sm);
+          border: 1px solid var(--border);
+          background: var(--bg-secondary);
+          border-radius: var(--radius-sm);
+          padding: 8px 10px;
+          cursor: pointer;
         }
         .ai-suggestion {
           background: var(--bg-secondary);
@@ -466,8 +861,14 @@ export default function AIPanel({ documentId, editor, getSelection, onApply, onU
           display: flex;
           align-items: center;
           justify-content: space-between;
+          gap: var(--space-sm);
           padding: var(--space-sm) var(--space-md);
           border-bottom: 1px solid var(--border);
+        }
+        .ai-suggestion-badges {
+          display: flex;
+          gap: 6px;
+          flex-wrap: wrap;
         }
         .ai-suggestion-header h4 {
           margin: 0;
@@ -489,10 +890,6 @@ export default function AIPanel({ documentId, editor, getSelection, onApply, onU
           border-bottom: 2px solid transparent;
           transition: all var(--transition);
         }
-        .ai-view-tab:hover {
-          color: var(--text-h);
-          background: var(--bg-tertiary);
-        }
         .ai-view-tab.is-active {
           color: var(--accent);
           border-bottom-color: var(--accent);
@@ -506,6 +903,24 @@ export default function AIPanel({ documentId, editor, getSelection, onApply, onU
           max-height: 300px;
           overflow-y: auto;
           color: var(--text-h);
+        }
+        .ai-diff-blocks {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          padding: var(--space-sm) var(--space-md);
+          border-bottom: 1px solid var(--border);
+          background: var(--bg);
+        }
+        .ai-diff-block {
+          display: flex;
+          gap: 8px;
+          align-items: flex-start;
+          font-size: var(--font-xs);
+          color: var(--text-h);
+        }
+        .ai-diff-block__preview {
+          line-height: 1.5;
         }
         .ai-diff-add {
           background: var(--color-success-bg);

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Integer, DateTime, ForeignKey
+from sqlalchemy import String, Integer, DateTime, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -25,7 +25,13 @@ class AIInteraction(Base):
     selection_to: Mapped[int | None] = mapped_column(Integer, nullable=True)
     base_revision_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     prompt_template_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    provider_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model_profile: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    system_prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="queued")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)

@@ -16,11 +16,32 @@ async def init_db():
     """Create all tables (for development/PoC — use Alembic in production)."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Migrate: add yjs_state column if missing on existing databases.
-        result = await conn.execute(text("PRAGMA table_info(documents)"))
-        columns = {row[1] for row in result.fetchall()}
-        if "yjs_state" not in columns:
-            await conn.execute(text("ALTER TABLE documents ADD COLUMN yjs_state BLOB"))
+        # Lightweight schema evolution for the PoC's SQLite-first setup.
+        tables_to_columns = {
+            "documents": {
+                "yjs_state": "BLOB",
+            },
+            "ai_interactions": {
+                "provider_name": "VARCHAR(50)",
+                "model_name": "VARCHAR(100)",
+                "prompt_text": "TEXT",
+                "system_prompt_text": "TEXT",
+                "error_code": "VARCHAR(100)",
+                "error_message": "VARCHAR(500)",
+            },
+            "ai_suggestions": {
+                "partial_output_available": "BOOLEAN NOT NULL DEFAULT 0",
+            },
+        }
+
+        for table_name, columns in tables_to_columns.items():
+            result = await conn.execute(text(f"PRAGMA table_info({table_name})"))
+            existing_columns = {row[1] for row in result.fetchall()}
+            for column_name, column_sql in columns.items():
+                if column_name not in existing_columns:
+                    await conn.execute(
+                        text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
+                    )
 
 
 async def get_async_session() -> AsyncSession:

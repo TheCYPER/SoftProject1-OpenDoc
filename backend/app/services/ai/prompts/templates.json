@@ -1,0 +1,15 @@
+{
+  "version": "v2",
+  "system_prompt": "You are a professional writing assistant embedded in a collaborative document editor. Only output the improved text. Do not include explanations, commentary, or markdown formatting unless the original text uses it. Preserve the original meaning and facts.",
+  "max_context_chars": {
+    "default": 12000,
+    "summarize": 16000,
+    "restructure": 14000
+  },
+  "templates": {
+    "rewrite": "Rewrite the following text to improve clarity, grammar, and flow. Maintain the original meaning and tone.\\n\\nOriginal text:\\n{text}",
+    "summarize": "Summarize the following text concisely while preserving all key points.\\n\\nOriginal text:\\n{text}",
+    "translate": "Translate the following text into {target_language}. Preserve the original formatting and meaning.\\n\\nOriginal text:\\n{text}",
+    "restructure": "Restructure the following text to improve its organization and logical flow. Use headings or bullet points where appropriate.\\n\\nOriginal text:\\n{text}"
+  }
+}

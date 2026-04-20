@@ -2,13 +2,18 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const apiPost = vi.fn();
-const apiGet = vi.fn();
-vi.mock("../api/client", () => ({
-  default: {
-    post: (...args: unknown[]) => apiPost(...args),
-    get: (...args: unknown[]) => apiGet(...args),
-  },
+const streamAIJob = vi.fn();
+const applyAIJob = vi.fn();
+const rejectAIJob = vi.fn();
+const cancelAIJob = vi.fn();
+const fetchAIHistory = vi.fn();
+
+vi.mock("../api/ai", () => ({
+  streamAIJob: (...args: unknown[]) => streamAIJob(...args),
+  applyAIJob: (...args: unknown[]) => applyAIJob(...args),
+  rejectAIJob: (...args: unknown[]) => rejectAIJob(...args),
+  cancelAIJob: (...args: unknown[]) => cancelAIJob(...args),
+  fetchAIHistory: (...args: unknown[]) => fetchAIHistory(...args),
 }));
 
 import type { Editor } from "@tiptap/react";
@@ -22,10 +27,15 @@ function makeEditor(text = "Original text goes here."): Editor {
 }
 
 function renderPanel(overrides: {
-  onApply?: (text: string, range?: { from: number; to: number }) => { ok: boolean; error?: string };
+  onApply?: (
+    text: string,
+    originalText: string,
+    range?: { from: number; to: number },
+  ) => { ok: boolean; error?: string };
   onUndo?: (req: UndoRequest) => { ok: boolean; error?: string };
   getSelection?: () => { selectedText: string; range: { from: number; to: number } } | null;
   editor?: Editor;
+  canEdit?: boolean;
 } = {}) {
   const onApply = overrides.onApply ?? vi.fn(() => ({ ok: true }));
   const onUndo = overrides.onUndo ?? vi.fn(() => ({ ok: true }));
@@ -37,6 +47,8 @@ function renderPanel(overrides: {
         documentId="doc-1"
         editor={editor}
         getSelection={getSelection}
+        canEdit={overrides.canEdit ?? true}
+        baseRevisionId="rev-1"
         onApply={onApply}
         onUndo={onUndo}
       />
@@ -45,17 +57,27 @@ function renderPanel(overrides: {
   return { ...utils, onApply, onUndo };
 }
 
-async function runAI(user: ReturnType<typeof userEvent.setup>) {
-  apiPost.mockResolvedValueOnce({ data: { job_id: "job-1" } });
-  apiGet.mockResolvedValueOnce({
-    data: {
+async function runStreamingAI(user: ReturnType<typeof userEvent.setup>) {
+  streamAIJob.mockImplementationOnce(async (_docId, _payload, handlers) => {
+    handlers.onStarted?.({
+      job_id: "job-1",
       suggestion_id: "sug-1",
-      original_text: "Original text goes here.",
-      suggested_text: "Rewritten text here.",
-      diff_json: null,
+      status: "streaming",
+      action: "rewrite",
       stale: false,
-      disposition: "pending",
-    },
+      provider_name: "groq",
+      model_name: "llama-test",
+      original_text: "Original text goes here.",
+    });
+    handlers.onDelta?.({ job_id: "job-1", suggestion_id: "sug-1", seq: 1, delta: "Rewritten " });
+    handlers.onDelta?.({ job_id: "job-1", suggestion_id: "sug-1", seq: 2, delta: "text here." });
+    handlers.onCompleted?.({
+      job_id: "job-1",
+      suggestion_id: "sug-1",
+      status: "ready",
+      stale: false,
+      text: "Rewritten text here.",
+    });
   });
   await user.click(screen.getByRole("button", { name: /run rewrite/i }));
   await screen.findByRole("heading", { name: /suggestion/i });
@@ -63,8 +85,15 @@ async function runAI(user: ReturnType<typeof userEvent.setup>) {
 
 describe("AIPanel", () => {
   beforeEach(() => {
-    apiPost.mockReset();
-    apiGet.mockReset();
+    streamAIJob.mockReset();
+    applyAIJob.mockReset();
+    rejectAIJob.mockReset();
+    cancelAIJob.mockReset();
+    fetchAIHistory.mockReset();
+    fetchAIHistory.mockResolvedValue({ items: [] });
+    applyAIJob.mockResolvedValue({ status: "applied", suggestion_id: "sug-1" });
+    rejectAIJob.mockResolvedValue({ status: "rejected" });
+    cancelAIJob.mockResolvedValue({ job_id: "job-1", status: "cancelled" });
   });
 
   it("renders all four action buttons", () => {
@@ -75,84 +104,72 @@ describe("AIPanel", () => {
     expect(screen.getByRole("button", { name: /^restructure$/i })).toBeInTheDocument();
   });
 
-  it("after running AI, shows the suggestion with Diff tab active by default", async () => {
+  it("renders streamed suggestion content and Diff tab by default after completion", async () => {
     const user = userEvent.setup();
     renderPanel();
-    await runAI(user);
+    await runStreamingAI(user);
 
     expect(screen.getByRole("tab", { name: "Diff" })).toHaveAttribute("aria-selected", "true");
-    // The diff tab renders both original (struck through) and added words.
-    expect(screen.getByText("Rewritten")).toBeInTheDocument(); // added
-    expect(screen.getByText("Original")).toBeInTheDocument(); // deleted
+    expect(screen.getByText("Rewritten")).toBeInTheDocument();
+    expect(screen.getByText("Original")).toBeInTheDocument();
   });
 
-  it("Side-by-side tab shows original and suggestion blocks with labels", async () => {
-    const user = userEvent.setup();
-    renderPanel();
-    await runAI(user);
-
-    await user.click(screen.getByRole("tab", { name: /side-by-side/i }));
-    expect(screen.getByText(/^Original$/i)).toBeInTheDocument();
-    // The full suggestion text appears as a block (not split into diff tokens).
-    expect(screen.getByText("Rewritten text here.")).toBeInTheDocument();
-    expect(screen.getByText("Original text goes here.")).toBeInTheDocument();
-  });
-
-  it("Edit tab lets the user modify the suggestion; Accept passes edited text to onApply", async () => {
+  it("accepts a streamed suggestion and records it with the backend", async () => {
     const user = userEvent.setup();
     const { onApply } = renderPanel();
-    await runAI(user);
-
-    await user.click(screen.getByRole("tab", { name: "Edit" }));
-    const textarea = screen.getByRole("textbox");
-    expect(textarea).toHaveValue("Rewritten text here.");
-
-    await user.clear(textarea);
-    await user.type(textarea, "My custom version.");
-
-    expect(screen.getByRole("button", { name: /accept edited/i })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /accept edited/i }));
-
-    expect(onApply).toHaveBeenCalledWith("My custom version.", undefined);
-    // Suggestion panel disappears after accept
-    expect(screen.queryByRole("heading", { name: /suggestion/i })).not.toBeInTheDocument();
-  });
-
-  it("Accept (no edit) passes the suggested text and shows the persistent Undo banner", async () => {
-    const user = userEvent.setup();
-    const { onApply, container } = renderPanel();
-    await runAI(user);
+    await runStreamingAI(user);
 
     await user.click(screen.getByRole("button", { name: /^accept$/i }));
-    expect(onApply).toHaveBeenCalledWith("Rewritten text here.", undefined);
 
-    const banner = container.querySelector(".ai-undo-banner") as HTMLElement | null;
-    expect(banner).not.toBeNull();
-    expect(within(banner!).getByText(/suggestion applied/i)).toBeInTheDocument();
-    expect(within(banner!).getByRole("button", { name: /^undo$/i })).toBeInTheDocument();
+    expect(onApply).toHaveBeenCalledWith(
+      "Rewritten text here.",
+      "Original text goes here.",
+      undefined,
+    );
+    expect(applyAIJob).toHaveBeenCalledWith("job-1", "full", "rev-1");
   });
 
-  it("Reject closes the suggestion without calling onApply", async () => {
+  it("supports partial acceptance of selected diff blocks", async () => {
+    const user = userEvent.setup();
+    const { onApply } = renderPanel({
+      getSelection: () => ({
+        selectedText: "Original text goes here.",
+        range: { from: 0, to: 24 },
+      }),
+    });
+    await runStreamingAI(user);
+
+    const checkboxes = screen.getAllByRole("checkbox");
+    expect(checkboxes.length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: /accept selected/i }));
+
+    expect(applyAIJob).toHaveBeenCalledTimes(1);
+    expect(applyAIJob.mock.calls[0][0]).toBe("job-1");
+    expect(applyAIJob.mock.calls[0][1]).toBe("partial");
+    expect(applyAIJob.mock.calls[0][2]).toBe("rev-1");
+    expect(applyAIJob.mock.calls[0][3].length).toBeGreaterThan(0);
+    expect(onApply).toHaveBeenCalled();
+  });
+
+  it("rejects a streamed suggestion via the backend", async () => {
     const user = userEvent.setup();
     const { onApply } = renderPanel();
-    await runAI(user);
+    await runStreamingAI(user);
 
     await user.click(screen.getByRole("button", { name: /^reject$/i }));
+    expect(rejectAIJob).toHaveBeenCalledWith("job-1");
     expect(onApply).not.toHaveBeenCalled();
     expect(screen.queryByRole("heading", { name: /suggestion/i })).not.toBeInTheDocument();
   });
 
-  it("Undo button calls onUndo with the original/applied text and dismisses the banner", async () => {
+  it("supports undo after accepting a suggestion", async () => {
     const user = userEvent.setup();
-    const { onApply, onUndo, container } = renderPanel();
-    await runAI(user);
-
+    const { onUndo, container } = renderPanel();
+    await runStreamingAI(user);
     await user.click(screen.getByRole("button", { name: /^accept$/i }));
-    expect(onApply).toHaveBeenCalled();
 
     const banner = container.querySelector(".ai-undo-banner") as HTMLElement | null;
     expect(banner).not.toBeNull();
-
     await user.click(within(banner!).getByRole("button", { name: /^undo$/i }));
 
     expect(onUndo).toHaveBeenCalledWith({
@@ -165,16 +182,35 @@ describe("AIPanel", () => {
     });
   });
 
-  it("running a new AI action clears any pending Undo banner", async () => {
+  it("cancels an in-progress stream", async () => {
     const user = userEvent.setup();
-    const { container } = renderPanel();
-    await runAI(user);
-    await user.click(screen.getByRole("button", { name: /^accept$/i }));
-    expect(container.querySelector(".ai-undo-banner")).not.toBeNull();
+    streamAIJob.mockImplementationOnce(async (_docId, _payload, handlers, signal?: AbortSignal) => {
+      handlers.onStarted?.({
+        job_id: "job-1",
+        suggestion_id: "sug-1",
+        status: "streaming",
+        action: "rewrite",
+        stale: false,
+        provider_name: "groq",
+        model_name: "llama-test",
+        original_text: "Original text goes here.",
+      });
+      handlers.onDelta?.({ job_id: "job-1", suggestion_id: "sug-1", seq: 1, delta: "Partial output" });
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      });
+    });
 
-    // Second AI run — the in-panel undo banner should clear before the new
-    // suggestion arrives (the old undo would be stale).
-    await runAI(user);
-    expect(container.querySelector(".ai-undo-banner")).toBeNull();
+    renderPanel();
+    await user.click(screen.getByRole("button", { name: /run rewrite/i }));
+    await screen.findByRole("button", { name: /cancel generation/i });
+    await user.click(screen.getByRole("button", { name: /cancel generation/i }));
+
+    await waitFor(() => {
+      expect(cancelAIJob).toHaveBeenCalledWith("job-1");
+    });
+    expect(screen.queryByRole("heading", { name: /suggestion/i })).not.toBeInTheDocument();
   });
 });

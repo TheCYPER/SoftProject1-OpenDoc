@@ -8,6 +8,7 @@ from app.api.deps import get_current_user, get_db
 from app.models.audit_event import AuditEvent
 from app.models.document_version import DocumentVersion
 from app.models.user import User
+from app.realtime.websocket import encode_prosemirror_json_to_yjs_state
 from app.schemas.document import VersionResponse
 from app.services.permissions import check_document_access
 
@@ -74,6 +75,7 @@ async def restore_version(
     db.add(new_version)
 
     doc.content = old_version.snapshot
+    doc.yjs_state = encode_prosemirror_json_to_yjs_state(old_version.snapshot)
     doc.current_revision_id = new_revision
 
     audit = AuditEvent(

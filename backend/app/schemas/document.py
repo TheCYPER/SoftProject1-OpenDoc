@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class DocumentCreate(BaseModel):
@@ -61,6 +61,13 @@ class ShareCreate(BaseModel):
     allow_ai: bool = True
     expires_at: datetime | None = None
 
+    @field_validator("grantee_ref")
+    @classmethod
+    def strip_grantee_ref(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return value.strip()
+
 
 class ShareUpdate(BaseModel):
     role: str | None = None
@@ -102,6 +109,11 @@ class ShareLinkCreateResponse(BaseModel):
 
 class ShareLinkRedeemRequest(BaseModel):
     token: str
+
+    @field_validator("token")
+    @classmethod
+    def strip_token(cls, value: str) -> str:
+        return value.strip()
 
 
 class ShareLinkRedeemResponse(BaseModel):

@@ -1,125 +1,90 @@
-# Assignment 2 — Task Breakdown & Work Distribution
+# Assignment 2 Task Status
 
-Based on a full scan of the current codebase against Assignment 2 requirements.
+## Abstract
 
-## Team & Ownership
+This file is the shipped-status ledger for the forked workspace as inspected on April 19, 2026. It replaces the old "planned work" view with a rubric-aligned status map tied to the code now present in the repo, including the fork-local April 19 branches owned by Giorgi.
 
-| Member | Primary Area |
-|--------|--------------|
-| **Percy** | Backend — auth, documents, permissions, infrastructure, DevOps |
-| **CDuongg** | Frontend & Testing — UI, rich-text editor, real-time collab UI, component/E2E tests |
-| **Giorgi** | AI Agent — AI streaming, prompt templates, LLM provider abstraction, interaction history |
+## Table of Contents
 
----
+1. [Team Ownership](#team-ownership)
+2. [Status Legend](#status-legend)
+3. [Part 1 Core Application](#part-1-core-application)
+4. [Part 2 Real-Time Collaboration](#part-2-real-time-collaboration)
+5. [Part 3 AI Writing Assistant](#part-3-ai-writing-assistant)
+6. [Part 4 Testing and Quality](#part-4-testing-and-quality)
+7. [Bonus Items](#bonus-items)
+8. [Open Caveats](#open-caveats)
 
-## Part 1: Core Application (25%)
+## Team Ownership
 
-| # | Task | Status | Owner | Priority |
-|---|------|--------|-------|----------|
-| 1.1a | **JWT Refresh Token (backend)** — Short-lived access token (15–30 min) + refresh token for silent re-auth | ❌ Currently 24h access token, no refresh | Percy | High |
-| 1.1b | **Frontend token refresh** — Axios 401 interceptor to auto-refresh; no raw 401 errors during editing | ❌ No interceptor | CDuongg | High |
-| 1.2a | **Rich-text editor extensions** — Add headings and code blocks (requirement: at minimum headings, bold, italic, lists, code blocks) | ⚠️ Only bold/italic/bullet/ordered list | CDuongg | Medium |
-| 1.2b | **Auto-save** — Debounced auto-save on content change with status indicator | ❌ Manual save button only | CDuongg | High |
-| 1.3a | **Server-side permission enforcement audit** — Ensure a viewer crafting direct API requests is still blocked on every endpoint (not just hidden buttons) | ⚠️ Partially done, needs full review | Percy | High |
+| Member | Primary ownership |
+| --- | --- |
+| Percy | Backend API, auth, permissions, sharing, tooling, root docs, submission plumbing |
+| CDuongg | Frontend editor, collaboration UX, offline/reconnect behavior, frontend tests |
+| Giorgi | AI streaming/history/prompts, fork-local hardening branches, partial acceptance, documentation alignment for AI scope |
 
-## Part 2: Real-Time Collaboration (20%)
+## Status Legend
 
-| # | Task | Status | Owner | Priority |
-|---|------|--------|-------|----------|
-| 2.1a | **Connection lifecycle** — Initial load, joining active sessions, disconnect/reconnect, state reconciliation; target <500ms propagation | ⚠️ Basic Yjs works; reconnect + offline sync need hardening | Percy (server) + CDuongg (client) | High |
-| 2.2a | **Presence: who is online** — Active user indicator list (baseline requirement) | ✅ PresenceBar exists | — | Done |
-| 2.2b | **[Bonus] Remote cursor & selection tracking** — Render other users' cursors/selections with distinct colors | ❌ | CDuongg | Low |
-| 2.3a | **WebSocket auth** — No valid token = no session | ✅ Implemented | — | Done |
-| 2.3b | **Offline editing + sync on reconnect** — Graceful degradation: continue editing offline, sync when back | ⚠️ Reconnect logic exists but offline editing untested | CDuongg | Medium |
+- `DONE`: shipped and evidenced in the current workspace.
+- `DONE*`: shipped, with a documented PoC caveat in `DEVIATIONS.md`.
+- `PARTIAL`: code exists or the path is started, but it is not fully verified as a submission-safe deliverable.
 
-## Part 3: AI Writing Assistant (25%) — Streaming is non-negotiable
+## Part 1 Core Application
 
-| # | Task | Status | Owner | Priority |
-|---|------|--------|-------|----------|
-| 3.1a | **AI features (≥2)** — Ensure at least 2 features work end-to-end (rewrite, summarize, translate, etc.) | ⚠️ Backend has 4 templates; frontend has UI but no streaming | Giorgi | High |
-| 3.2a | **AI Streaming — backend** — FastAPI `StreamingResponse` (SSE) or WebSocket; token-by-token delivery; handle mid-stream errors | ❌ Currently blocking full-response | Giorgi | **Critical** |
-| 3.2b | **AI Streaming — frontend** — Render text progressively as chunks arrive; cancel button to abort generation | ❌ | CDuongg (with Giorgi on contract) | **Critical** |
-| 3.3a | **Suggestion UX** — Compare original vs. suggestion before applying (side panel, inline diff, etc.); accept/reject/edit; undo after acceptance | ⚠️ Basic accept/reject exists, no comparison view, no undo | CDuongg | High |
-| 3.4a | **Context & Prompts** — Send appropriate context (not full document blindly); truncation for long docs; prompt templates in config files (not hardcoded); LLM provider abstraction | ⚠️ Provider abstraction done; prompts are hardcoded dicts | Giorgi | High |
-| 3.5a | **AI Interaction History — backend** — Log every interaction (input, prompt, model, response, accept/reject); history query endpoint | ⚠️ Backend models exist, missing query endpoint | Giorgi | Medium |
-| 3.5b | **AI Interaction History — frontend** — Per-document history UI | ❌ | CDuongg | Medium |
+| Item | Status | Owner(s) | Evidence | Notes |
+| --- | --- | --- | --- | --- |
+| 1.1a JWT refresh token backend | `DONE` | Percy | PR #7 / `fc12ae1` | 15-minute access + 7-day refresh tokens |
+| 1.1b Frontend silent token refresh | `DONE` | CDuongg | PR #12 / `f4208da` | Axios + fetch refresh handling |
+| 1.2a Rich-text headings and code blocks | `DONE` | CDuongg | PR #14 / `14cd53e` | Headings, inline code, code blocks in toolbar |
+| 1.2b Debounced autosave | `DONE` | CDuongg | PR #13 / `50c7200` | Autosave plus save-status indicator |
+| 1.3a Server-side permission enforcement audit | `DONE*` | Percy + CDuongg + Giorgi | `fc12ae1`, `f1898ce`, `3237973` | Core routes are server-enforced; remaining infra-grade hardening is tracked as deviations |
 
-## Part 4: Testing & Quality (20%)
+## Part 2 Real-Time Collaboration
 
-| # | Task | Status | Owner | Priority |
-|---|------|--------|-------|----------|
-| 4.1a | **Backend tests — core** — auth (incl. refresh), document CRUD with permissions, WebSocket auth + message exchange | ⚠️ Basic tests exist, need coverage for refresh & new endpoints | Percy | Medium |
-| 4.1b | **Backend tests — AI** — AI invocation (mock LLM), streaming, prompt templates, interaction history | ⚠️ Current AI tests mock non-streaming only | Giorgi | Medium |
-| 4.2a | **Frontend tests** — Component tests (Vitest / React Testing Library) for auth flow, document UI, AI suggestion UI | ❌ No frontend tests | CDuongg | Medium |
-| 4.3a | **Run script** — `run.sh` or `Makefile` to start both backend and frontend with one command | ❌ | Percy | Low |
-| 4.3b | **README** — Setup, running, tests, architecture overview; comprehensive | ⚠️ Basic README exists | Percy (overall) + CDuongg (frontend section) + Giorgi (AI section) | Low |
-| 4.3c | **API docs** — FastAPI auto-generated OpenAPI with meaningful descriptions and schemas | ⚠️ Auto-generated but descriptions may be sparse | Percy (core) + Giorgi (AI endpoints) | Low |
-| 4.3d | **DEVIATIONS.md** — Document every difference from Assignment 1 design: what changed, why, improvement or compromise | ❌ | All three (each on their area) | Low |
+| Item | Status | Owner(s) | Evidence | Notes |
+| --- | --- | --- | --- | --- |
+| 2.1a Connection lifecycle and reconnect hardening | `DONE*` | Percy + CDuongg + Giorgi | `96c7295`, `3e0ce6f`, `3237973` | Reconnect/backoff, close codes, revoke handling, and lifecycle hardening shipped |
+| 2.2a Presence: who is online | `DONE` | CDuongg | `PresenceBar.tsx`, Yjs awareness wiring | Presence chips render active collaborators |
+| 2.2b Bonus: remote cursors and selections | `DONE` | Giorgi + CDuongg | `3498345` | Custom cursor builders and remote caret styling shipped |
+| 2.3a WebSocket auth | `DONE` | Percy | PR #7 / backend realtime auth checks | Invalid/expired/wrong-role users are rejected |
+| 2.3b Offline editing and sync on reconnect | `DONE*` | CDuongg | PR #18 / `f91cf34` | IndexedDB-backed offline persistence is shipped; see caveats in `DEVIATIONS.md` |
 
-## Part 5: Demo & Presentation (10%)
+## Part 3 AI Writing Assistant
 
-| # | Task | Owner |
-|---|------|-------|
-| 5.1 | **Live demo script** (5 min): register/login → rich-text editing + auto-save → sharing with roles → real-time collab in 2 windows → AI streaming + suggestion UX + cancel → version restore | All three (Percy: auth/docs, CDuongg: editor/collab, Giorgi: AI streaming) |
-| 5.2 | **Q&A prep** — Each member must answer in depth about the parts they personally implemented; all members should handle general architecture questions | Each on their own parts |
+| Item | Status | Owner(s) | Evidence | Notes |
+| --- | --- | --- | --- | --- |
+| 3.1a At least two AI features end-to-end | `DONE` | Giorgi | `backend/app/services/ai/prompts/templates.json`, `AIPanel.tsx` | Rewrite, summarize, translate, restructure are wired |
+| 3.2a Backend AI streaming | `DONE` | Giorgi | `feat/pr20-ai-streaming-history` / `fa0ee0a` | SSE endpoint, delta events, cancel path, status updates |
+| 3.2b Frontend AI streaming and cancel | `DONE` | Giorgi + CDuongg | `AIPanel.tsx`, `frontend/src/api/ai.ts` | Progressive render plus cancel button shipped |
+| 3.3a Suggestion UX | `DONE*` | CDuongg + Giorgi | PR #15 / `24587b1`, local `feat/pr23-partial-acceptance` / `ff1806b` | Diff, side-by-side, editable suggestion, undo, and partial accept shipped |
+| 3.4a Context handling, prompt templates, provider abstraction | `DONE` | Giorgi | `templates.json`, `templates.py`, `ai_service.py` | Prompts externalized and truncated; provider abstraction supports OpenAI/Groq/Claude/Ollama |
+| 3.5a AI interaction history backend | `DONE` | Giorgi | `fa0ee0a`, `/api/documents/{id}/ai-history` | History includes provider/model/prompt/disposition metadata |
+| 3.5b AI interaction history frontend | `DONE` | Giorgi + CDuongg | `AIPanel.tsx` recent history list | Last few AI jobs can be reopened in the sidebar |
 
-## Bonus Items (up to +10 pts, each worth ≤2)
+## Part 4 Testing and Quality
 
-| # | Task | Status | Owner |
-|---|------|--------|-------|
-| B1 | **CRDT conflict resolution** (Yjs) — No data loss under adversarial conditions | ✅ Already using Yjs | — |
-| B2 | **Remote cursor/selection tracking** with distinct colors/labels | ❌ | CDuongg |
-| B3 | **Share-by-link** with configurable permissions and revocation | ❌ Schema exists, not implemented | Percy |
-| B4 | **Partial acceptance of AI suggestions** (accept/reject individual parts) | ❌ | CDuongg (UI) + Giorgi (diff segmentation) |
-| B5 | **E2E tests** (Playwright/Cypress) covering login through AI suggestion acceptance | ❌ | CDuongg |
+| Item | Status | Owner(s) | Evidence | Notes |
+| --- | --- | --- | --- | --- |
+| 4.1a Backend core tests | `DONE` | Percy | `backend/app/tests/`, 81 collected tests | Auth, documents, sharing, realtime, versions, export, audit covered |
+| 4.1b Backend AI tests | `DONE` | Giorgi | `backend/app/tests/test_ai.py`, `test_ai_jobs_permissions.py` | Streaming, cancellation, history, and permission paths covered |
+| 4.2a Frontend tests | `DONE` | CDuongg | 21 passing Vitest tests | Login, tokens, toast, AI panel flows covered |
+| 4.3a One-command run script / Makefile | `DONE` | Percy | `run.sh`, `Makefile` | Local bootstrap and local CI targets exist |
+| 4.3b README | `DONE` | Percy + CDuongg + Giorgi | Root `README.md` | Updated in this documentation pass to match shipped scope |
+| 4.3c API docs / OpenAPI summaries | `DONE` | Percy + Giorgi | FastAPI `/docs`, endpoint summaries in route decorators | AI endpoints are included |
+| 4.3d `DEVIATIONS.md` | `DONE` | Percy + CDuongg + Giorgi | Root `DEVIATIONS.md` | Completed in this documentation pass across backend/frontend/AI |
 
----
+## Bonus Items
 
-## Ownership Summary
+| Bonus item | Status | Owner(s) | Evidence | Notes |
+| --- | --- | --- | --- | --- |
+| B1 CRDT conflict resolution via Yjs | `DONE` | CDuongg | Yjs collaboration path since PR #3 | Core collaboration model |
+| B2 Remote cursor/selection tracking | `DONE` | Giorgi + CDuongg | `3498345` | Distinct user cursor colors and labels |
+| B3 Share-by-link with revocation | `DONE` | Percy | `96c7295`, `test_share_links.py` | Authenticated redemption flow shipped |
+| B4 Partial acceptance of AI suggestions | `DONE*` | Giorgi + CDuongg | `ff1806b` | Client-side partial apply plus backend disposition recording |
+| B5 E2E tests covering login through AI acceptance | `DONE*` | Giorgi | `frontend/tests/e2e/login-edit-ai-accept.spec.ts` | Playwright scenario passes locally; it is still not wired into `make ci` |
 
-### Percy — Backend & Infrastructure
+## Open Caveats
 
-1. JWT refresh token mechanism (1.1a)
-2. Server-side permission audit across all endpoints (1.3a)
-3. WebSocket server-side lifecycle improvements (2.1a — server side)
-4. Backend core tests — auth, documents, permissions, WebSocket (4.1a)
-5. `run.sh` / Makefile (4.3a)
-6. README core + API docs (4.3b, 4.3c)
-7. DEVIATIONS.md — backend/infra sections (4.3d)
-8. *[Bonus]* Share-by-link with revocation (B3)
-
-### CDuongg — Frontend & Testing
-
-1. Frontend token refresh interceptor (1.1b)
-2. Rich-text: headings + code blocks (1.2a)
-3. Auto-save with debounce and status indicator (1.2b)
-4. WebSocket client-side lifecycle + reconnect (2.1a — client side)
-5. Offline editing + reconnect hardening (2.3b)
-6. **AI streaming frontend rendering + cancel button** (3.2b) — **TOP PRIORITY**
-7. Suggestion UX: comparison view + accept/reject + undo (3.3a)
-8. AI interaction history UI (3.5b)
-9. Frontend component tests with Vitest + RTL (4.2a)
-10. README frontend section + DEVIATIONS frontend section
-11. *[Bonus]* Remote cursor tracking (B2), partial-accept UI (B4-UI), E2E tests (B5)
-
-### Giorgi — AI Agent
-
-1. **AI Streaming backend — FastAPI StreamingResponse (SSE) / WebSocket** (3.2a) — **TOP PRIORITY**
-2. AI feature end-to-end validation (≥2 features) (3.1a)
-3. Prompt templates externalization (config files, not hardcoded) + long document truncation (3.4a)
-4. LLM provider abstraction review (swapping providers should require changes in one place only) (3.4a)
-5. AI interaction history endpoint — query log of inputs/prompts/models/responses/accept-reject (3.5a)
-6. Backend AI tests — streaming, mocked LLM, prompt rendering, interaction history (4.1b)
-7. API docs for AI endpoints (4.3c)
-8. DEVIATIONS.md — AI section (4.3d)
-9. *[Bonus]* Partial-accept suggestion segmentation on backend (B4-backend)
-
----
-
-## Coordination Notes
-
-- **Streaming is non-negotiable** — A blocking AI call with a loading spinner will not pass. This is the single highest-priority item and requires tight coordination between Giorgi (backend stream) and CDuongg (frontend consumption).
-- **AI contract review** — Any change to AI request/response schema (especially streaming chunk format) requires joint review by Giorgi + CDuongg. Document the contract in `backend/app/schemas/ai.py` + matching frontend types.
-- **Permission model** — If Giorgi adds new AI endpoints, Percy must review to ensure they go through the same permission layer used by document endpoints (no AI bypass for viewers).
-- **Every team member must contribute code** — Git attribution is checked. No commits = individual grade adjustment.
-- **Meaningful commits & feature branches** — A single "final commit" is a red flag. Use feature branches and PRs with reviews.
+- The main PoC caveats are documented in [DEVIATIONS.md](./DEVIATIONS.md), not repeated in full here.
+- Bonus B5 is counted as shipped with the caveat that Playwright is a focused scenario and is still not part of `make ci`.
+- Local `main` contains the April 19 fork-only branches that are not visible as GitHub PR numbers on `origin`, so branch names and commit hashes are used as evidence where PR numbers do not exist.

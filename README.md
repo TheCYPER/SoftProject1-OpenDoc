@@ -1,256 +1,165 @@
 # Collaborative Document Editor
 
-Real-time collaborative document editor with an AI writing assistant, built as a university assignment PoC (Part 4 implementation based on Parts 1 & 2).
+## Abstract
 
-## What This Demonstrates
+This repository is the Assignment 2 implementation of a real-time collaborative document editor with an AI writing assistant. The shipped PoC uses FastAPI, SQLite, React 19, Tiptap, Yjs, and WebSocket-based collaboration, with AI suggestions streamed over Server-Sent Events. As of April 19, 2026, the repo reflects a three-person delivery story: Percy owns backend, auth, sharing, tooling, and most submission plumbing; CDuongg owns the editor, collaboration UX, offline/reconnect behavior, and frontend tests; Giorgi owns AI streaming/history/prompt work plus the late-stage hardening branches in the forked workspace.
 
-- **Real-time collaboration** -- Multiple users editing the same document simultaneously via Yjs CRDT over WebSocket, with live cursor/presence tracking.
-- **AI writing assistant** -- Four actions (rewrite, summarize, translate, restructure) backed by a pluggable provider system supporting OpenAI, Anthropic Claude, and Ollama (local).
-- **Document management** -- Create, list, search, update, and delete documents with workspace-level organization.
-- **Sharing & permissions** -- Role-based access (owner / editor / viewer) with optional expiration dates.
-- **Version history** -- Snapshot-based versioning with restore-to-previous-version support.
-- **Audit trail** -- Event logging for all document operations.
-- **Export** -- Download documents as HTML or plain text.
-- **Authentication** -- JWT-based stateless auth with registration and login.
+## Table of Contents
 
-## Tech Stack
+1. [Assignment 2 Snapshot](#assignment-2-snapshot)
+2. [Team and Ownership](#team-and-ownership)
+3. [Branch and PR Evidence](#branch-and-pr-evidence)
+4. [Shipped Scope](#shipped-scope)
+5. [Quick Start](#quick-start)
+6. [Environment and Secrets](#environment-and-secrets)
+7. [Testing and Verification](#testing-and-verification)
+8. [Report Index](#report-index)
+9. [Known PoC Limits](#known-poc-limits)
 
-| Layer | Technology |
-|-------|-----------|
-| Backend | Python 3.12, FastAPI, SQLAlchemy (async), Alembic |
-| Database | SQLite (aiosqlite) |
-| Frontend | React 19, TypeScript, Vite, Tiptap (ProseMirror) |
-| Realtime | Yjs + y-protocols over FastAPI WebSocket, pycrdt on server |
-| AI | httpx calls to OpenAI / Anthropic / Ollama APIs |
-| Infra | Docker Compose |
+## Assignment 2 Snapshot
 
-## Prerequisites
+- Course context: AI1220 Software Engineering, Spring 2026.
+- Submission tip used for evidence: the local `main` HEAD at hand-in time. Branch-level evidence below records the important feature slices without assuming one fixed final hash.
+- Upstream remote: `origin = https://github.com/TheCYPER/SoftProject1-OpenDoc.git`.
+- Contribution evidence from `git shortlog -sn --all`: Percy 39 commits, CDuongg 16 commits, Giorgi31 11 commits.
+- The authoritative implementation/status cross-check is split across:
+  - [TASKS.md](./TASKS.md) for shipped status by rubric item
+  - [DEVIATIONS.md](./DEVIATIONS.md) for design-vs-implementation differences
+  - [Part 1.md](./Part%201.md), [Part 2.md](./Part%202.md), and [Part 3.md](./Part%203.md) for the report set
 
-- **Docker & Docker Compose** (recommended), or
-- **Python 3.12+** and **Node.js 18+** for running locally without Docker
+## Team and Ownership
 
-For AI features, you need at least one of:
-- [Ollama](https://ollama.com) running locally (default, no API key needed)
-- An OpenAI API key
-- An Anthropic API key
+| Member | Primary scope | Concrete evidence |
+| --- | --- | --- |
+| Percy | Backend API, auth, permissions, share-links, tooling, run scripts, root documentation | PRs #7-10 on `origin/*`, plus merge ownership on `origin/main` |
+| CDuongg | Rich-text editor, Yjs collaboration UX, reconnect/offline flow, remote presence, frontend unit tests | PRs #1-4 and #12-18 on `origin/*`, plus review branch `review/pr-19-revoke-enforcement` |
+| Giorgi | AI streaming/history/prompts, partial acceptance, late-stage hardening, local submission alignment in the fork | Local branches `feat/pr19-tooling-ci-baseline`, `feat/pr20-ai-streaming-history`, `feat/pr21-collab-hardening-bonuses`, `feat/pr22-backend-integrity`, `feat/pr23-partial-acceptance` |
 
-## Quick Start — one command
+## Branch and PR Evidence
 
-After cloning and copying the env template:
+| Date | Evidence | Owner(s) | What it shipped |
+| --- | --- | --- | --- |
+| March 25, 2026 | PR #1 and PR #2 on `origin` | Percy + CDuongg | Rich-text editor baseline and editor stabilization |
+| March 31, 2026 | PR #3 `origin/feat/realtime-collaboration` | CDuongg | Yjs real-time sync |
+| April 1, 2026 | PR #4 `origin/fix-viewer-readonly-enforcement` | CDuongg | Viewer read-only enforcement in UI and realtime path |
+| April 15, 2026 | PRs #7-10 on `origin/*` | Percy | Refresh tokens, permission audit, share-by-link, backend tests, Makefile/run.sh, doc tooling |
+| April 16-18, 2026 | PRs #12-18 on `origin/*` | CDuongg | Frontend refresh interceptor, autosave, headings/code blocks, suggestion comparison/edit/undo, reconnect hardening, frontend tests, offline editing |
+| April 19, 2026 | `feat/pr19-tooling-ci-baseline` | Giorgi | Fresh-clone bootstrap and local CI targets |
+| April 19, 2026 | `feat/pr20-ai-streaming-history` (`fa0ee0a`) | Giorgi | SSE AI streaming, cancel/status handling, AI history endpoint, prompt version capture |
+| April 19, 2026 | `feat/pr21-collab-hardening-bonuses` (`3498345`) | Giorgi | Remote cursors plus revoke/session hardening |
+| April 19, 2026 | `feat/pr22-backend-integrity` (`3237973`) | Giorgi | Sharing/collaboration state hardening |
+| April 19, 2026 | `feat/pr23-partial-acceptance` (`ff1806b`) merged into local `main` | Giorgi | Partial AI suggestion acceptance in the editor |
 
-```bash
-cp .env.example .env          # adjust AI provider / API keys if needed
-make install && make migrate  # first time only
-make dev                      # or: ./run.sh
-```
+## Shipped Scope
 
-`make dev` starts backend (:8000) and frontend (:5173) together; `Ctrl-C` stops both. See `make help` for all targets (test, coverage, docker, clean, etc.).
+### Backend and Infrastructure
 
-## Quick Start (Docker)
+- JWT login plus refresh-token flow with access/refresh token separation.
+- Document CRUD, sharing, share-by-link redemption, version listing/restore, export, and audit trail.
+- Server-enforced permissions on document, version, sharing, AI, and workspace AI-policy routes.
+- Single-process WebSocket collaboration server with Yjs sync, explicit close codes, `presence_leave`, periodic persistence, and read-only error frames.
+- One-command local workflow via `run.sh`, `make install`, `make migrate`, and `make dev`.
+
+### Frontend and Collaboration
+
+- Tiptap editor with headings, inline code, code blocks, lists, bold, and italic.
+- Debounced autosave with status indicator plus manual retry/save button.
+- Presence chips, remote cursor rendering, reconnect/backoff behavior, and IndexedDB-backed offline persistence.
+- Share modal, version panel, audit panel, HTML/text export actions, and viewer read-only state.
+- Frontend unit tests for login, token storage, toast notifications, and the AI panel.
+
+### AI and Giorgi Scope
+
+- Four AI actions: rewrite, summarize, translate, and restructure.
+- Server-Sent Events streaming endpoint at `/api/documents/{id}/ai-jobs/stream`.
+- Progressive rendering in the AI sidebar, user cancellation, stale/partial badges, and AI history preview.
+- Diff view, side-by-side comparison, editable suggestion mode, undo after apply, and partial-accept block selection.
+- Prompt templates externalized to `backend/app/services/ai/prompts/templates.json` with truncation metadata and provider/model capture in history.
+
+## Quick Start
+
+### Local
 
 ```bash
 cp .env.example .env
-make docker    # wraps: docker-compose up --build
+./run.sh
 ```
 
-- **Frontend**: http://localhost:5173
-- **Backend API**: http://localhost:8000
-- **API docs (Swagger)**: http://localhost:8000/docs
+`./run.sh` copies `.env.example` if needed, installs dependencies, initializes the database, and starts backend plus frontend together.
 
-## Quick Start (Local, no Docker, manual)
-
-If you'd rather not use `make`:
+### Make Targets
 
 ```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-alembic upgrade head
-uvicorn app.main:app --reload --port 8000
+make install
+make migrate
+make dev
 ```
+
+- Frontend: `http://localhost:5173`
+- Backend API: `http://localhost:8000`
+- Swagger/OpenAPI: `http://localhost:8000/docs`
+
+### Docker
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cp .env.example .env
+make docker
 ```
 
-Open http://localhost:5173 in your browser.
+Current `docker-compose.yml` starts only `backend` and `frontend`. It does not start an Ollama container.
 
-## Make commands
+## Environment and Secrets
 
-<!-- AUTO-GENERATED from Makefile — run `make help` for the live version -->
+`.env.example` is the source of truth for the root environment file. Copy it to `.env`, keep secrets local, and do not commit `.env`.
 
-| Command | Description |
-|---------|-------------|
-| `make install` | Install backend venv + frontend node_modules |
-| `make migrate` | Run `alembic upgrade head` |
-| `make backend` | Start the backend only (foreground, port 8000) |
-| `make frontend` | Start the frontend only (foreground, port 5173) |
-| `make dev` | Start backend + frontend together (Ctrl-C stops both) |
-| `make test` | Run backend pytest suite |
-| `make test-cov` | Run backend tests with coverage summary |
-| `make docker` | `docker-compose up --build` |
-| `make docker-down` | `docker-compose down` |
-| `make clean` | Remove caches, `.pytest_cache`, frontend `dist/` |
+| Variable | Default in `.env.example` | When to set it |
+| --- | --- | --- |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./collab_editor.db` | Change only if you want a different DB path/driver |
+| `SECRET_KEY` | `change-me-in-production` | Always replace outside local PoC/dev use |
+| `AI_DEFAULT_PROVIDER` | `ollama` | Set to `openai`, `groq`, `claude`, or `ollama` |
+| `OPENAI_API_KEY` | *(empty)* | Needed only when using OpenAI |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Override only for compatible proxies/endpoints |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Optional OpenAI model override |
+| `GROQ_API_KEY` | *(empty)* | Needed only when using Groq |
+| `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Normally leave as-is |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Optional Groq model override |
+| `ANTHROPIC_API_KEY` | *(empty)* | Needed only when using Claude |
+| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Normally leave as-is |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-20250514` | Optional Claude model override |
+| `OLLAMA_BASE_URL` | `http://ollama:11434` | Override for your actual Ollama host |
+| `OLLAMA_MODEL` | `qwen2.5:8b` | Optional Ollama model override |
 
-<!-- END AUTO-GENERATED -->
+Secret-handling notes:
 
-## Environment Variables
+- The committed `SECRET_KEY` value is a placeholder for local use only. Any shared deployment must override it.
+- Only one provider credential set is required. Leaving unused API keys blank is expected.
+- For non-Docker local runs with a host Ollama daemon, `OLLAMA_BASE_URL=http://localhost:11434` is the usual value.
+- For the current Docker setup, if Ollama runs on the host machine, use `OLLAMA_BASE_URL=http://host.docker.internal:11434`.
 
-Copy `.env.example` to `.env` and adjust as needed.
+## Testing and Verification
 
-<!-- AUTO-GENERATED from .env.example + backend/app/config.py -->
+Verified during this documentation pass on April 19, 2026:
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DATABASE_URL` | No | `sqlite+aiosqlite:///./collab_editor.db` | Async SQLAlchemy connection string |
-| `SECRET_KEY` | **Yes in prod** | `change-me-in-production` | JWT signing secret — override in any non-dev deployment |
-| `AI_DEFAULT_PROVIDER` | No | `ollama` | Fallback AI provider when a request doesn't specify one (`ollama`, `openai`, or `claude`) |
-| `OPENAI_API_KEY` | No | *(empty)* | OpenAI API key; caller can also pass per-request |
-| `OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | OpenAI endpoint (override for Azure OpenAI / proxies) |
-| `ANTHROPIC_API_KEY` | No | *(empty)* | Anthropic API key; caller can also pass per-request |
-| `ANTHROPIC_BASE_URL` | No | `https://api.anthropic.com` | Anthropic endpoint |
-| `OLLAMA_BASE_URL` | No | `http://ollama:11434` | Ollama server URL (compose default; use `http://localhost:11434` for host ollama) |
-| `OLLAMA_MODEL` | No | `qwen2.5:8b` | Ollama model name pulled at first use |
+- `make test-cov`: 81 backend tests passed, 75% overall coverage.
+- `cd frontend && npm test -- --run`: 21 frontend tests passed.
 
-<!-- END AUTO-GENERATED -->
+Notes:
 
-## Running Tests
+- The frontend test run emits React `act(...)` warnings from `AIPanel.test.tsx`, but the suite still passes.
+- A Playwright e2e scenario exists at `frontend/tests/e2e/login-edit-ai-accept.spec.ts`.
+- `cd frontend && npm run test:e2e` passed locally on April 19, 2026 after fixing the Playwright web-server readiness probe.
 
-```bash
-make test           # pytest -v
-make test-cov       # pytest --cov=app --cov-report=term-missing
-```
+## Report Index
 
-Tests use an in-memory SQLite database — no external services required. The suite is 65 tests; coverage target is **≥80 %** on `app/api/` and `app/services/permissions.py` (AI provider wire paths are excluded — they need live LLM backends). Current coverage: ~88 % overall.
+- [Part 1.md](./Part%201.md): requirements engineering baseline
+- [Part 2.md](./Part%202.md): system architecture and data model
+- [Part 3.md](./Part%203.md): project management, ownership, workflow, and milestone evidence
+- [TASKS.md](./TASKS.md): rubric-to-shipped-status matrix
+- [DEVIATIONS.md](./DEVIATIONS.md): design-vs-implementation gap log
 
-## Architecture at a glance
+## Known PoC Limits
 
-For the full design, see `Part 2.md` (C4 diagrams, architectural drivers, component responsibilities). The short version:
-
-| Driver (Part 2 priority order) | How the PoC addresses it |
-|---|---|
-| 1. Low-latency collab | pycrdt server authoritative doc + Yjs binary sync + awareness relay |
-| 2. Failure isolation | AI jobs recorded in DB with their own status lifecycle; backend survives provider failures |
-| 3. Security & audit | JWT access/refresh tokens, role-based access via `DocumentShare`, `audit_events` row per mutating action |
-| 4. Non-destructive AI | Suggestions are stored separately from content; apply/reject is explicit and logged |
-| 5. Horizontal scale | **PoC-limited** — single-process WebSocket, no Redis pub/sub (see DEVIATIONS.md) |
-| 6. Team velocity | FastAPI + async SQLAlchemy for the team's Python stack; one repo, one compose file |
-
-C4 diagrams live in `C4-diagram/` (source in `.puml`, pre-rendered PNGs at repo root).
-
-## RBAC matrix
-
-All endpoints below require a valid access token. The role needed comes from the caller's effective role on the target document (owner ≥ editor ≥ viewer). A user has a role if they are the document's `created_by` (=> owner), or hold a non-expired `DocumentShare` row for the document.
-
-| Endpoint | Role required |
-|---|---|
-| `GET /api/documents/{id}` | viewer |
-| `PATCH /api/documents/{id}` | editor |
-| `DELETE /api/documents/{id}` | owner |
-| `GET /api/documents/{id}/export` | viewer |
-| `GET /api/documents/{id}/versions` | viewer |
-| `POST /api/documents/{id}/versions/{vid}/restore` | editor |
-| `GET /api/documents/{id}/shares` | owner |
-| `POST /api/documents/{id}/shares` | owner |
-| `PATCH /api/documents/{id}/shares/{sid}` | owner |
-| `DELETE /api/documents/{id}/shares/{sid}` | owner |
-| `POST /api/documents/{id}/share-links` | owner |
-| `DELETE /api/documents/{id}/share-links/{sid}` | owner |
-| `POST /api/shares/redeem` | any authenticated |
-| `POST /api/documents/{id}/ai-jobs` | editor |
-| `GET /api/ai-jobs/{id}` / `/suggestion` | viewer |
-| `POST /api/ai-jobs/{id}/apply` / `/reject` | editor |
-| `GET /api/documents/{id}/audit` | owner |
-| `PATCH /api/workspaces/{id}/ai-policy` | workspace owner/admin (via `WorkspaceMember`) |
-| `WS /ws/documents/{id}` | viewer to read, editor to send updates |
-
-## WebSocket protocol
-
-Endpoint: `ws://{host}/ws/documents/{document_id}?token={access_token}` — the token must be an **access** token (refresh tokens are rejected).
-
-Close codes:
-- `4401` — authentication required / invalid / wrong token type
-- `4403` — authenticated but no access to this document
-- `1000` — idle timeout (`WS_IDLE_TIMEOUT_SECONDS`, default 60) or normal close
-
-Binary frames follow the [y-protocols](https://github.com/yjs/y-protocols) wire format:
-- `[MSG_SYNC=0][SYNC_STEP1=0][varuint8array(state_vector)]`
-- `[MSG_SYNC=0][SYNC_STEP2=1][varuint8array(update)]`
-- `[MSG_SYNC=0][SYNC_UPDATE=2][varuint8array(update)]`
-- `[MSG_AWARENESS=1][varuint8array(awareness_update)]`
-
-Server-emitted JSON text frames (new in PR #8):
-```json
-{"type": "presence_leave", "user_id": "...", "connection_id": "..."}
-{"type": "error", "code": "READ_ONLY", "detail": "..."}
-```
-
-The server applies Yjs updates to its authoritative `pycrdt.Doc`, broadcasts them to peers, and persists `yjs_state` to the DB every `WS_PERSIST_INTERVAL_UPDATES` applied updates (default 50) plus a final flush when the room empties.
-
-## API reference
-
-FastAPI serves interactive docs at **`http://localhost:8000/docs`** (Swagger) and **`/redoc`**. All endpoints have human-readable summaries and response-code annotations. For a flat listing, see the RBAC matrix above.
-
-## Deviations from the Part 1 / Part 2 design
-
-See **[DEVIATIONS.md](./DEVIATIONS.md)** for a per-item log of what shipped vs what the design doc described, with rationale and impact.
-
-## Project Structure
-
-```
-backend/
-  app/
-    main.py              FastAPI application
-    config.py            Pydantic Settings (loads .env)
-    database.py          Async SQLAlchemy engine + session
-    models/              ORM models (11 tables)
-    schemas/             Pydantic request/response DTOs
-    api/                 Route handlers
-      documents.py       Document CRUD + export
-      users.py           Register / login
-      shares.py          Sharing & permissions
-      versions.py        Version history & restore
-      ai_jobs.py         AI writing jobs & suggestions
-      audit.py           Audit trail
-      deps.py            Dependency injection (DB, JWT auth)
-    services/ai/         AI service layer
-      providers/         OpenAI, Claude, Ollama implementations
-      prompts/           Versioned prompt templates
-    realtime/
-      websocket.py       Yjs sync + awareness over WebSocket
-  alembic/               Database migrations
-
-frontend/
-  src/
-    pages/
-      LoginPage.tsx      Auth (login + register)
-      DocumentListPage.tsx  Document browser
-      EditorPage.tsx     Editor with collaboration
-    components/
-      AIPanel.tsx        AI assistant sidebar
-      PresenceBar.tsx    Active collaborators indicator
-      ShareModal.tsx     Sharing dialog
-      VersionPanel.tsx   Version history sidebar
-      Toast.tsx          Notifications
-```
-
-## What This Does NOT Implement (Yet)
-
-These are scoped out of the PoC intentionally; see DEVIATIONS.md for the full backend/infra list with rationale.
-
-- **Operational Transform / full CRDT conflict resolution** — Yjs handles basic CRDT, no bespoke merge strategy beyond storing the binary Yjs state.
-- **Workspace & team management UI** — Backend models exist, `WorkspaceMember` rows are checked on the AI-policy endpoint, but nothing in the running system seeds memberships (see DEVIATIONS #5).
-- **Production auth hardening** — Access+refresh tokens ship, but no rotation, no revocation list, no OAuth/SSO, no email verification, no password reset.
-- **Horizontal scaling** — Single-process WebSocket; no Redis pub/sub or sticky sessions.
-- **Object storage for large documents** — Content is stored in the database (JSON column), not in S3/GCS.
-- **Offline support / local-first sync** — Server emits `presence_leave` control frames and flushes state periodically, but the frontend doesn't yet queue edits while offline.
-- **CI/CD pipeline** — No GitHub Actions. `make test-cov` is the canonical local gate before opening a PR.
-- **Rate limiting on all endpoints** — Only AI job creation is rate-limited (20/min, 50 jobs/user).
-- **Comprehensive E2E tests** — Backend has 65 unit+integration tests at ~88 % coverage; no Playwright/Cypress suite yet.
-
-## License
-
-University assignment -- not licensed for redistribution.
+- SQLite and in-memory WebSocket rooms keep the stack easy to grade, but they are not horizontally scalable.
+- AI apply/reject endpoints record disposition and audit metadata; the actual content mutation is performed in the editor and then persisted through normal save/autosave.
+- Workspace AI-policy data exists, but workspace membership seeding is still incomplete, so that path remains mostly administrative scaffolding.
+- For the full design-vs-implementation discussion, see [DEVIATIONS.md](./DEVIATIONS.md).

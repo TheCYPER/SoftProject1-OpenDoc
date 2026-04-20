@@ -60,6 +60,8 @@ export interface AIJobResponse {
   job_id: string;
   status: string;
   created_at: string;
+  provider_name?: string | null;
+  model_name?: string | null;
 }
 
 export interface AISuggestion {
@@ -69,4 +71,73 @@ export interface AISuggestion {
   diff_json: Record<string, unknown> | null;
   stale: boolean;
   disposition: string;
+  partial_output_available?: boolean;
+}
+
+export type AIActionName = "rewrite" | "summarize" | "translate" | "restructure";
+export type AIProviderName = "openai" | "groq" | "claude" | "ollama";
+
+export interface AIHistoryItem {
+  job_id: string;
+  suggestion_id: string | null;
+  action: AIActionName;
+  scope: string;
+  status: string;
+  disposition: string | null;
+  stale: boolean;
+  original_text: string | null;
+  suggested_text: string | null;
+  partial_output_available: boolean;
+  prompt_template_version: string | null;
+  provider_name: string | null;
+  model_name: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface AIHistoryResponse {
+  items: AIHistoryItem[];
+}
+
+export interface AIJobCreatePayload {
+  action: AIActionName;
+  scope: "selection" | "document";
+  selection_range?: EditorSelectionRange;
+  selected_text: string;
+  base_revision_id?: string | null;
+  options?: Record<string, unknown>;
+  provider?: AIProviderName;
+  model?: string;
+}
+
+export interface AIStreamJobStartedEvent {
+  job_id: string;
+  suggestion_id: string;
+  status: string;
+  action: AIActionName;
+  stale: boolean;
+  provider_name: string | null;
+  model_name: string | null;
+  original_text: string;
+}
+
+export interface AIStreamTextDeltaEvent {
+  job_id: string;
+  suggestion_id: string;
+  seq: number;
+  delta: string;
+}
+
+export interface AIStreamTerminalEvent {
+  job_id: string;
+  suggestion_id: string;
+  status: string;
+  stale?: boolean;
+  text?: string;
+  code?: string;
+  message?: string;
+  partial_text?: string;
+  partial_output_available?: boolean;
 }

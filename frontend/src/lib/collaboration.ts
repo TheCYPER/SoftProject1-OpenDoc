@@ -3,6 +3,11 @@ import * as encoding from "lib0/encoding";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
 import * as Y from "yjs";
+import {
+  buildLocalCollaborationUser,
+  clearRemoteCollaborators,
+  pruneCollaboratorsByUserId,
+} from "./collaborationPresence";
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -13,6 +18,7 @@ const JITTER_RATIO = 0.3;
 
 const WS_CLOSE_AUTH = 4401;
 const WS_CLOSE_FORBIDDEN = 4403;
+const WS_CLOSE_PERMISSION_REFRESH = 4408;
 
 export interface ConnectionStatus {
   state: "connecting" | "connected" | "disconnected" | "offline" | "forbidden";
@@ -24,7 +30,9 @@ interface CollaborationClientOptions {
   getToken: () => string | null;
   refreshToken?: () => Promise<boolean>;
   ydoc: Y.Doc;
+  userId?: string;
   displayName?: string;
+  onPermissionsChanged?: () => Promise<void> | void;
   onStatusChange: (status: ConnectionStatus) => void;
 }
 
@@ -42,6 +50,7 @@ export class CollaborationClient {
   private readonly getToken: () => string | null;
   private readonly refreshToken?: () => Promise<boolean>;
   private readonly ydoc: Y.Doc;
+  private readonly onPermissionsChanged?: () => Promise<void> | void;
   private readonly onStatusChange: (status: ConnectionStatus) => void;
   private readonly originToken = Symbol("collaboration-origin");
 
@@ -51,6 +60,7 @@ export class CollaborationClient {
   private destroyed = false;
   private forbidden = false;
   private authRefreshInFlight = false;
+  private permissionsRefreshInFlight = false;
   private onlineListener: (() => void) | null = null;
 
   readonly awareness: awarenessProtocol.Awareness;
@@ -60,14 +70,22 @@ export class CollaborationClient {
     this.getToken = options.getToken;
     this.refreshToken = options.refreshToken;
     this.ydoc = options.ydoc;
+    this.onPermissionsChanged = options.onPermissionsChanged;
     this.onStatusChange = options.onStatusChange;
     this.handleDocumentUpdate = this.handleDocumentUpdate.bind(this);
     this.handleAwarenessUpdate = this.handleAwarenessUpdate.bind(this);
+    this.ydoc.on("update", this.handleDocumentUpdate);
 
     this.awareness = new awarenessProtocol.Awareness(options.ydoc);
-    const displayName = options.displayName ?? "User";
-    const color = `hsl(${(Math.abs(hashCode(displayName)) % 360)}, 70%, 50%)`;
-    this.awareness.setLocalState({ user: { name: displayName, color } });
+    this.awareness.on("update", this.handleAwarenessUpdate);
+    this.setLocalUser(options.displayName ?? "User", options.userId);
+  }
+
+  setLocalUser(displayName: string, userId?: string) {
+    this.awareness.setLocalStateField(
+      "user",
+      buildLocalCollaborationUser(displayName, userId),
+    );
   }
 
   connect() {
@@ -90,14 +108,16 @@ export class CollaborationClient {
       this.websocket = websocket;
       this.attempt = 0;
       this.emit("connected");
-      this.ydoc.on("update", this.handleDocumentUpdate);
-      this.awareness.on("update", this.handleAwarenessUpdate);
       this.sendSyncStep1();
       this.broadcastAwareness();
     };
 
     websocket.onmessage = (event) => {
       const message = event.data;
+      if (typeof message === "string") {
+        this.handleControlMessage(message);
+        return;
+      }
       if (!(message instanceof ArrayBuffer)) {
         return;
       }
@@ -144,6 +164,7 @@ export class CollaborationClient {
     }
     this.ydoc.off("update", this.handleDocumentUpdate);
     this.awareness.off("update", this.handleAwarenessUpdate);
+    clearRemoteCollaborators(this.awareness);
     awarenessProtocol.removeAwarenessStates(
       this.awareness,
       [this.ydoc.clientID],
@@ -170,23 +191,26 @@ export class CollaborationClient {
   }
 
   private async handleClose(event: CloseEvent, ws: WebSocket) {
-    this.ydoc.off("update", this.handleDocumentUpdate);
-    this.awareness.off("update", this.handleAwarenessUpdate);
     if (this.websocket === ws) {
       this.websocket = null;
     }
     if (this.destroyed) {
-      awarenessProtocol.removeAwarenessStates(
-        this.awareness,
-        [this.ydoc.clientID],
-        "disconnect",
-      );
       return;
     }
+
+    clearRemoteCollaborators(this.awareness);
 
     if (event.code === WS_CLOSE_FORBIDDEN) {
       this.forbidden = true;
       this.emit("forbidden");
+      return;
+    }
+
+    if (event.code === WS_CLOSE_PERMISSION_REFRESH) {
+      await this.refreshPermissions();
+      if (this.destroyed || this.forbidden) return;
+      this.attempt = 0;
+      this.connect();
       return;
     }
 
@@ -241,7 +265,12 @@ export class CollaborationClient {
     if (origin === this.originToken || this.websocket?.readyState !== WebSocket.OPEN) {
       return;
     }
-    const changedClients = [...added, ...updated, ...removed];
+    const changedClients = [...added, ...updated, ...removed].filter(
+      (clientId) => clientId === this.ydoc.clientID,
+    );
+    if (changedClients.length === 0) {
+      return;
+    }
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
     encoding.writeVarUint8Array(
@@ -321,12 +350,36 @@ export class CollaborationClient {
       websocket.close();
     }
   }
-}
 
-function hashCode(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  private handleControlMessage(raw: string) {
+    try {
+      const payload = JSON.parse(raw) as {
+        type?: string;
+        code?: string;
+        user_id?: string;
+        client_ids?: number[];
+      };
+      if (payload.type === "presence_leave") {
+        if (Array.isArray(payload.client_ids) && payload.client_ids.length > 0) {
+          awarenessProtocol.removeAwarenessStates(this.awareness, payload.client_ids, "presence_leave");
+        } else if (payload.user_id) {
+          pruneCollaboratorsByUserId(this.awareness, payload.user_id);
+        }
+      } else if (payload.type === "error" && payload.code === "READ_ONLY") {
+        void this.refreshPermissions();
+      }
+    } catch {
+      // Ignore malformed control messages — they should not break sync.
+    }
   }
-  return h;
+
+  private async refreshPermissions() {
+    if (this.permissionsRefreshInFlight) return;
+    this.permissionsRefreshInFlight = true;
+    try {
+      await this.onPermissionsChanged?.();
+    } finally {
+      this.permissionsRefreshInFlight = false;
+    }
+  }
 }

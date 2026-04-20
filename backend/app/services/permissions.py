@@ -23,6 +23,7 @@ async def check_document_access(
     document_id: str,
     user: User,
     required_role: str = "viewer",
+    allow_deleted: bool = False,
 ) -> Document:
     """Return the Document if `user` has at least `required_role` access.
 
@@ -34,12 +35,17 @@ async def check_document_access(
     """
     result = await db.execute(select(Document).where(Document.document_id == document_id))
     doc = result.scalar_one_or_none()
-    if doc is None or doc.status == "deleted":
+    if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     if doc.created_by == user.user_id:
+        if doc.status == "deleted" and not allow_deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
         setattr(doc, "role", "owner")
         return doc
+
+    if doc.status == "deleted":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     if required_role == "owner":
         raise HTTPException(
@@ -54,17 +60,24 @@ async def check_document_access(
             DocumentShare.grantee_ref == user.email,
         )
     )
-    share = share_result.scalar_one_or_none()
-
-    if share is None:
+    shares = share_result.scalars().all()
+    if not shares:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
-    if share.expires_at is not None:
-        expires = share.expires_at
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
-        if expires < datetime.now(timezone.utc):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Share has expired")
+    valid_shares: list[DocumentShare] = []
+    for share in shares:
+        if share.expires_at is not None:
+            expires = share.expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires < datetime.now(timezone.utc):
+                continue
+        valid_shares.append(share)
+
+    if not valid_shares:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Share has expired")
+
+    share = max(valid_shares, key=lambda candidate: _ROLE_LEVEL.get(candidate.role, 0))
 
     if _ROLE_LEVEL.get(share.role, 0) < _ROLE_LEVEL.get(required_role, 0):
         raise HTTPException(
