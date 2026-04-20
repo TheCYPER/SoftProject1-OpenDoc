@@ -2,19 +2,20 @@
 
 ## Abstract
 
-This repository is the Assignment 2 implementation of a real-time collaborative document editor with an AI writing assistant. The shipped PoC uses FastAPI, SQLite, React 19, Tiptap, Yjs, and WebSocket-based collaboration, with AI suggestions streamed over Server-Sent Events. As of April 19, 2026, the repo reflects a three-person delivery story: Percy owns backend, auth, sharing, tooling, and most submission plumbing; CDuongg owns the editor, collaboration UX, offline/reconnect behavior, and frontend tests; Giorgi owns AI streaming/history/prompt work plus the late-stage hardening branches in the forked workspace.
+This repository is the Assignment 2 implementation of a real-time collaborative document editor with an AI writing assistant. The shipped PoC uses FastAPI, SQLite, React 19, Tiptap, Yjs, and WebSocket-based collaboration, with AI suggestions streamed over Server-Sent Events. As of April 20, 2026, the repo reflects a three-person delivery story: Percy owns backend, auth, sharing, tooling, and most submission plumbing; CDuongg owns the editor, collaboration UX, offline/reconnect behavior, and frontend tests; Giorgi owns AI streaming/history/prompt work plus the late-stage hardening branches in the forked workspace.
 
 ## Table of Contents
 
 1. [Assignment 2 Snapshot](#assignment-2-snapshot)
-2. [Team and Ownership](#team-and-ownership)
-3. [Branch and PR Evidence](#branch-and-pr-evidence)
-4. [Shipped Scope](#shipped-scope)
-5. [Quick Start](#quick-start)
-6. [Environment and Secrets](#environment-and-secrets)
-7. [Testing and Verification](#testing-and-verification)
-8. [Report Index](#report-index)
-9. [Known PoC Limits](#known-poc-limits)
+2. [Assignment 2 Rubric Alignment](#assignment-2-rubric-alignment)
+3. [Team and Ownership](#team-and-ownership)
+4. [Branch and PR Evidence](#branch-and-pr-evidence)
+5. [Shipped Scope](#shipped-scope)
+6. [Quick Start](#quick-start)
+7. [Environment and Secrets](#environment-and-secrets)
+8. [Testing and Verification](#testing-and-verification)
+9. [Report Index](#report-index)
+10. [Known PoC Limits](#known-poc-limits)
 
 ## Assignment 2 Snapshot
 
@@ -26,6 +27,18 @@ This repository is the Assignment 2 implementation of a real-time collaborative 
   - [TASKS.md](./TASKS.md) for shipped status by rubric item
   - [DEVIATIONS.md](./DEVIATIONS.md) for design-vs-implementation differences
   - [Part 1.md](./Part%201.md), [Part 2.md](./Part%202.md), and [Part 3.md](./Part%203.md) for the report set
+
+## Assignment 2 Rubric Alignment
+
+The grading rubric in `AI1220_assignment2.pdf` weights Core App 25%, Real-Time Collaboration 20%, AI Assistant 25%, Testing & Quality 20%, Demo 10%, plus up to +10 bonus points. The table below maps each component to the shipped evidence in this repo so a grader can jump straight to the code.
+
+| Rubric component | Weight | Shipped evidence | Notes |
+| --- | --- | --- | --- |
+| Core App: auth, CRUD, rich text, versions, roles | 25% | `backend/app/api/users.py` (JWT access+refresh, PBKDF2-SHA256 passwords), `backend/app/api/documents.py`, `backend/app/api/versions.py`, `backend/app/services/permissions.py`, `frontend/src/pages/EditorPage.tsx` (Tiptap + autosave) | 15-min access / 7-day refresh tokens; server-side permission checks on every document, version, share, and AI route. |
+| Real-Time Collaboration: concurrent edit, presence, WS auth, reconnect | 20% | `backend/app/realtime/websocket.py` (Yjs sync, authenticated WS, close codes, periodic persistence), `frontend/src/lib/collaboration.ts`, `frontend/src/components/PresenceBar.tsx` | Yjs CRDT, awareness-based presence, reconnect/backoff, IndexedDB-backed offline editing. |
+| AI Assistant: ≥2 features, streaming, suggestion UX, prompts, history | 25% | `backend/app/api/ai_jobs.py` (SSE stream + cancel + history), `backend/app/services/ai/providers/` (OpenAI/Groq/Claude/Ollama/mock), `backend/app/services/ai/prompts/templates.json`, `frontend/src/components/AIPanel.tsx` | Four AI actions (rewrite, summarize, translate, restructure), user-initiated cancel, diff/compare/edit/undo, partial accept, per-document history. |
+| Testing & Quality: backend + frontend tests, run script, README, OpenAPI, deviations | 20% | `backend/app/tests/` (81 pytest cases, 74% coverage), `frontend/src/**/*.test.*` (21 Vitest cases), `run.sh`, `Makefile`, FastAPI `/docs`, [DEVIATIONS.md](./DEVIATIONS.md) | `make ci` runs the same targets locally that CI runs remotely. |
+| Bonus: CRDT, remote cursors, share-by-link revocation, partial accept, E2E | +10 | `frontend/src/lib/collaboration*.ts`, `backend/app/api/shares.py` (create/revoke/redeem), `frontend/src/components/AIPanel.tsx` (partial accept), `frontend/tests/e2e/login-edit-ai-accept.spec.ts` | All five bonus items shipped. |
 
 ## Team and Ownership
 
@@ -138,16 +151,17 @@ Secret-handling notes:
 
 ## Testing and Verification
 
-Verified during this documentation pass on April 19, 2026:
+Verified during this documentation pass on April 20, 2026:
 
-- `make test-cov`: 81 backend tests passed, 75% overall coverage.
-- `cd frontend && npm test -- --run`: 21 frontend tests passed.
+- `make test-cov`: 81 backend tests passed, 74% overall coverage.
+- `make frontend-test` (`cd frontend && npm run test`): 21 Vitest cases passed across login, token storage, toast, and AI panel flows.
+- `.github/workflows/ci.yml` runs `make install-backend`, `make migrate`, `make test-cov`, `make frontend-test`, and `make frontend-build` on every push and PR.
 
 Notes:
 
 - The frontend test run emits React `act(...)` warnings from `AIPanel.test.tsx`, but the suite still passes.
-- A Playwright e2e scenario exists at `frontend/tests/e2e/login-edit-ai-accept.spec.ts`.
-- `cd frontend && npm run test:e2e` passed locally on April 19, 2026 after fixing the Playwright web-server readiness probe.
+- A Playwright e2e scenario lives at `frontend/tests/e2e/login-edit-ai-accept.spec.ts` and is executed via `cd frontend && npm run test:e2e`. It is not yet part of the hosted CI job.
+- The OpenAPI schema is served at `http://localhost:8000/docs` while the backend is running; every AI route carries a `summary=` in its decorator for readable descriptions.
 
 ## Report Index
 
@@ -162,4 +176,6 @@ Notes:
 - SQLite and in-memory WebSocket rooms keep the stack easy to grade, but they are not horizontally scalable.
 - AI apply/reject endpoints record disposition and audit metadata; the actual content mutation is performed in the editor and then persisted through normal save/autosave.
 - Workspace AI-policy data exists, but workspace membership seeding is still incomplete, so that path remains mostly administrative scaffolding.
+- Refresh tokens are issued without rotation or a server-side revocation list; a leaked refresh token stays usable until its 7-day expiry.
+- Hosted CI covers backend + frontend unit tests and the frontend build; the Playwright E2E scenario currently runs locally only.
 - For the full design-vs-implementation discussion, see [DEVIATIONS.md](./DEVIATIONS.md).

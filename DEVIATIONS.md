@@ -52,11 +52,11 @@ This file logs the meaningful differences between the Part 1 / Part 2 design bas
 
 **Design baseline:** Horizontal scale via a shared pub/sub layer and multi-instance realtime nodes.
 
-**Shipped:** WebSocket rooms live in an in-memory room registry in `backend/app/realtime/websocket.py`. There is no Redis fan-out or cross-node state sharing.
+**Shipped:** `backend/app/realtime/websocket.py` holds an authoritative `pycrdt.Doc` per document in an in-memory room registry and merges client updates into it before fan-out. There is no Redis fan-out or cross-node state sharing.
 
-**Reason:** The assignment demo workload does not require multi-instance deployment.
+**Reason:** The assignment demo workload does not require multi-instance deployment, and keeping the CRDT in-process removes one moving part for grading.
 
-**Impact:** The collaboration server is bounded to one process. A real deployment would need shared presence/update fan-out plus document ownership coordination.
+**Impact:** Character-level merges are real (bonus: CRDT), but the collaboration server is bounded to one process. A real deployment would need shared presence/update fan-out plus document ownership coordination.
 
 **Classification:** Known PoC limit.
 
@@ -72,15 +72,15 @@ This file logs the meaningful differences between the Part 1 / Part 2 design bas
 
 **Classification:** Intentional security simplification.
 
-### 6. Workspace AI policy exists, but workspace membership seeding is incomplete
+### 6. Workspace AI policy is configurable but not runtime-enforced
 
-**Design baseline:** Workspace membership would be part of the normal onboarding path and AI policy would be actively enforced from that seed data.
+**Design baseline:** Workspace membership would be part of the normal onboarding path and AI policy (per-role allowed features, monthly budget, per-user quota) would gate AI job creation.
 
-**Shipped:** `WorkspaceMember` data and the AI-policy endpoint exist, but registration does not yet auto-seed a working membership graph for ordinary users.
+**Shipped:** `WorkspaceMember` and the `PATCH /api/workspaces/{id}/ai-policy` endpoint exist (`backend/app/api/workspaces.py`), and the policy JSON is persisted, but `backend/app/api/ai_jobs.py` does not consult `workspace.ai_policy_json` before creating a job. Registration also does not auto-seed workspace membership for new users.
 
-**Reason:** Document-level sharing covered the main grader-visible flows first.
+**Reason:** Document-level sharing covered the main grader-visible flows first, and the AI provider/streaming layer was prioritized over workspace-level governance.
 
-**Impact:** Workspace AI policy is more of an administrative scaffold than a fully exercised product flow in the current PoC.
+**Impact:** Workspace AI policy is an administrative scaffold today: policy can be stored, but it does not yet block AI jobs in practice.
 
 **Classification:** Partial implementation.
 
@@ -96,17 +96,17 @@ This file logs the meaningful differences between the Part 1 / Part 2 design bas
 
 **Classification:** PoC compromise.
 
-### 8. Local CI targets exist, but there is no hosted GitHub Actions pipeline
+### 8. CI pipeline covers backend and frontend only
 
-**Design baseline:** The process expected PR evidence and automated quality checks, ideally in CI.
+**Design baseline:** The process expected PR evidence and automated quality checks.
 
-**Shipped:** `make ci` exists locally, but there is no `.github/workflows/` pipeline in the repo.
+**Shipped:** `.github/workflows/ci.yml` runs `make install-backend`, `make migrate`, `make test-cov`, `make frontend-test`, and `make frontend-build` on every push and pull request. It does not yet run the Playwright E2E suite.
 
-**Reason:** The team prioritized runnable local scripts over hosted CI wiring.
+**Reason:** The unit-test layer was stabilized first; the E2E suite still requires a browser runtime and is left to local runs to keep PR feedback fast.
 
-**Impact:** Verification depends on local discipline rather than mandatory remote checks.
+**Impact:** Remote CI verifies 81 backend tests and 21 frontend tests on every PR, but the bonus E2E scenario is only verified locally.
 
-**Classification:** Process compromise.
+**Classification:** Partial CI coverage.
 
 ## Frontend and Collaboration UX
 
