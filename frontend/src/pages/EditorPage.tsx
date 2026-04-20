@@ -137,6 +137,11 @@ export default function EditorPage() {
     ],
     content: EMPTY_DOC,
     immediatelyRender: false,
+    // Start read-only so viewers can't type into the phantom local copy
+    // during the window between mount and `loadDocument` resolving. The
+    // canEdit effect below elevates owners/editors to editable once the
+    // document's effective role is known.
+    editable: false,
     editorProps: {
       attributes: {
         class: "rich-editor__content",
