@@ -282,19 +282,25 @@ export default function EditorPage() {
     prevConnectionStateRef.current = connectionStatus.state;
   }, [connectionStatus.state, toast]);
 
-  const reloadFromServer = () => {
-    // Force Yjs re-initialization — destroys old Yjs doc and reconnects to
-    // get the latest authoritative state from the server.
-    activeDocumentIdRef.current = null;
-    collaborationClientRef.current?.destroy();
-    collaborationClientRef.current = null;
-    if (ydocRef.current) {
-      editor?.unregisterPlugin([ySyncPluginKey, yUndoPluginKey]);
-      editor?.unregisterPlugin([yCursorPluginKey]);
-      ydocRef.current.destroy();
-      ydocRef.current = null;
+  const handleRestore = async () => {
+    // The backend edits the live CRDT room and broadcasts a SYNC_UPDATE over
+    // the existing WebSocket, so the editor updates on its own via ySyncPlugin.
+    // We only need to (a) refresh doc metadata for fields like
+    // current_revision_id and (b) realign savedSnapshotRef with the restored
+    // content so the incoming Yjs update doesn't flip the doc to "dirty" and
+    // trigger a spurious auto-save that would create a bogus "update" version.
+    try {
+      const resp = await api.get(`/api/documents/${documentId}`);
+      const nextContent: ProseMirrorDoc = resp.data.content ?? EMPTY_DOC;
+      savedSnapshotRef.current = JSON.stringify(nextContent);
+      setDoc(resp.data);
+      setIsDirty(false);
+      setSaveStatus("saved");
+      setLastSavedAt(new Date());
+      toast("Version restored.", "success");
+    } catch {
+      toast("Restored, but failed to refresh — try reloading.", "error");
     }
-    void loadDocument();
   };
 
   const saveDocument = useCallback(async () => {
@@ -758,7 +764,7 @@ export default function EditorPage() {
         documentId={documentId!}
         isOpen={versionsOpen}
         onClose={() => setVersionsOpen(false)}
-        onRestore={reloadFromServer}
+        onRestore={() => void handleRestore()}
       />
 
       {auditOpen && (
