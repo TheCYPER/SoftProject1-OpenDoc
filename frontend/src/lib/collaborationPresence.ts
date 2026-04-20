@@ -73,10 +73,24 @@ export function normalizeCollaborator(
 }
 
 export function collectCollaborators(awareness: Awareness): Collaborator[] {
+  const localState = awareness.getLocalState() as Record<string, unknown> | null;
+  const localUser = (localState?.user ?? {}) as CollaborationUserState;
+  const localUserId = localUser.id;
+
+  const seenIds = new Set<string>();
   const collaborators: Collaborator[] = [];
   awareness.getStates().forEach((state: Record<string, unknown>, clientId: number) => {
     if (clientId === awareness.clientID) return;
-    collaborators.push(normalizeCollaborator(clientId, state));
+    const normalized = normalizeCollaborator(clientId, state);
+    // Filter ghost-self entries: another clientID carrying our own user.id.
+    // These can appear from React StrictMode's effect double-invoke (both
+    // WS connections briefly register with the server) or from an
+    // ungraceful reconnect before the server pruned the old awareness.
+    if (localUserId && normalized.id === localUserId) return;
+    // Dedupe multiple tabs for the same remote user — one chip per person.
+    if (seenIds.has(normalized.id)) return;
+    seenIds.add(normalized.id);
+    collaborators.push(normalized);
   });
   return collaborators.sort((left, right) => (
     left.name.localeCompare(right.name) || left.clientId - right.clientId
